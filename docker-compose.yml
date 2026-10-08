@@ -1,0 +1,68 @@
+# Entorno de DESARROLLO (Fase 0).
+# Uso: cp .env.example .env && docker compose up -d --build   (o `make up`)
+# El frontend se ejecuta en el host con `npm run dev` (puerto 5173) y hace
+# proxy de /api hacia la API. Las imágenes de producción (php-fpm + nginx,
+# no root) y el servicio frontend se agregan en la fase de DevOps.
+name: fartmar
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fartmar}
+      POSTGRES_USER: ${POSTGRES_USER:-fartmar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env (cp .env.example .env)}
+      TZ: UTC
+    ports:
+      - "${DB_HOST_PORT:-55432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./docker/php
+    image: fartmar-api-dev:local
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: http://localhost:${API_HOST_PORT:-8080}
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-fartmar}
+      DB_USERNAME: ${POSTGRES_USER:-fartmar}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      LOG_CHANNEL: stderr
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      ALERT_EXPIRY_DAYS: ${ALERT_EXPIRY_DAYS:-90}
+      # servidor embebido de PHP con varios workers: permite peticiones simultáneas.
+      PHP_CLI_SERVER_WORKERS: 4
+      COMPOSER_CACHE_DIR: /tmp/composer-cache
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+    volumes:
+      - ./backend:/app
+      - composer-cache:/tmp/composer-cache
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ready > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # el primer arranque desde cero puede incluir `composer install`
+      start_period: 180s
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  composer-cache:

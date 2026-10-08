@@ -1,3 +1,31 @@
-﻿.claude/settings.local.json
+# Secretos y entorno local (solo se versionan los .env.example)
 .env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
 
+# Configuración local de Claude Code
+.claude/settings.local.json
+
+# Dependencias
+backend/vendor/
+frontend/node_modules/
+node_modules/
+
+# Builds y caches
+frontend/dist/
+frontend/coverage/
+backend/.phpunit.cache/
+backend/.phpunit.result.cache
+backend/storage/framework/cache/phpstan/
+*.log
+
+# Respaldos locales de BD
+backups/
+
+# Editores / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
