@@ -118,7 +118,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
-          description: '`STOCK_INSUFICIENTE` (con `requested` y `available`) o `IDEMPOTENCIA_CONFLICTO`'
+          description: '`STOCK_INSUFICIENTE` (con `requested` y `available`; sin detalles si lo frenó el CHECK de la BD), `IDEMPOTENCIA_CONFLICTO` o `CONFLICTO_CONCURRENCIA` (deadlock/serialización tras 3 intentos: reintentar con la misma clave)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -225,7 +225,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`TRANSICION_INVALIDA` (no está pendiente) o `STOCK_INSUFICIENTE`'
+          description: '`TRANSICION_INVALIDA` (no está pendiente), `STOCK_INSUFICIENTE` o `CONFLICTO_CONCURRENCIA`'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -379,6 +379,8 @@ components:
                 - NO_AUTORIZADO
                 - NO_ENCONTRADO
                 - DEMASIADAS_SOLICITUDES
+                - CONFLICTO_CONCURRENCIA
+                - ERROR_INTERNO
             message: { type: string, description: Mensaje en español para el usuario final }
             details: { type: object, additionalProperties: true }
 
