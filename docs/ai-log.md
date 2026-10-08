@@ -76,3 +76,38 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - La BD valida la fila resultante, no la transición: un UPDATE que borre `dispatched_at` y ponga `ANULADO` en la misma sentencia pasaría (documentado en `docs/modelo-datos.md`).
   - No se exige por BD que `resolved_by` de una discrepancia sea regente, ni que el usuario que autoriza/aprueba esté activo (`is_active`), ni que una dispensación PENDIENTE no tenga lotes. Candidatos a reforzar si se decide.
   - Si cambia `products.is_controlled` después de crear dispensaciones, los triggers no revisan las existentes.
+
+### 2026-10-08 — Fase 2: núcleo de dispensación (FEFO, kardex, idempotencia, control especial) y API
+- Agente: backend-dominio (Claude Code)
+- Qué generó la IA:
+  - `app/Domain/Inventory`: `FefoAllocator` (función pura), `StockService` (único punto que cambia `stocks.quantity`), `KardexService`, `BusinessDate` ("hoy" en Bogotá), `InventoryQuery`.
+  - `app/Domain/Dispensing`: `DispenseService` (create / authorize / reject / preview), `IdempotencyGuard`, DTOs (`DispenseData`, `DispenseResult`, `FefoPreview`).
+  - `app/Domain/Exceptions`: excepciones de negocio con código, estado HTTP y detalles; `app/Http/ApiErrorRenderer.php` las convierte a `{ error: { code, message, details } }` (registrado en `bootstrap/app.php`).
+  - `app/Domain/Auth/LoginService`, `app/Domain/Audit/AuditLogger`.
+  - API `/api/v1`: `auth/login|logout|me`, `dispensations` (POST con `Idempotency-Key`, GET, `preview`, `{id}/authorize`, `{id}/reject`), `stocks`. Form Requests, Policies (`DispensationPolicy`, `StockPolicy`) y Resources.
+  - El `InventorySeeder` ahora usa `StockService::increase()` (antes escribía stock y kardex a mano).
+  - Pruebas: 10 unitarias de FEFO, 8 de `StockService`, 23 de `DispenseService`, 29 de API. `docs/openapi.yaml` nuevo. Supuestos S-27…S-37.
+- Qué decisión tomó y por qué:
+  - **Flujo transaccional de una dispensación, en simple:** todo pasa dentro de una sola transacción; si algo falla en cualquier paso, la BD deshace todo (no queda stock descontado a medias ni kardex huérfano). Los pasos son:
+    1. ¿Ya existe esa `Idempotency-Key`? Si es el mismo contenido, se devuelve la dispensación original y no se toca nada; si el contenido cambió, 409.
+    2. Se inserta la cabecera de la dispensación **primero**, para "apartar" la clave. Si llega un segundo reintento idéntico al mismo tiempo, su INSERT queda esperando en el índice UNIQUE; cuando el primero confirma, el segundo falla con violación de UNIQUE, se deshace y el servicio devuelve la dispensación ganadora (carrera resuelta por la BD, sin locks extra).
+    3. Se bloquean (`FOR UPDATE`) la prescripción y sus líneas y se valida vigencia y saldo: prescrito − entregado − reservado por pendientes.
+    4. Si hay un controlado, se guarda como `PENDIENTE_AUTORIZACION` y termina (sin mover stock).
+    5. Si no, por cada producto (en orden de `product_id`) se bloquean sus existencias no vencidas en orden `(expires_at, lot_id)`, `FefoAllocator` decide cuánto sale de cada lote, y `StockService::decrease()` descuenta y escribe el kardex con el saldo resultante.
+  - **Orden de bloqueo fijo** (dispensación → prescripción → líneas por id → existencias por producto y FEFO) en todos los caminos para evitar deadlocks; `DB::transaction(fn, 3)` reintenta si aun así ocurre uno.
+  - `FefoAllocator` es puro (recibe filas ya bloqueadas) para probarlo sin BD; el bloqueo vive en `StockService::lockFefoCandidates()` con `FOR UPDATE OF stocks` (no bloquea filas de `lots`).
+  - `StockService::decrease()` vuelve a bloquear la fila, valida existencias y vencimiento y calcula `balance_after` desde la fila bloqueada: el saldo del kardex es correcto aunque otro llamador olvide bloquear antes. El CHECK `quantity >= 0` sigue siendo la última línea de defensa.
+  - El rol de regente se valida en la Policy (403 `NO_AUTORIZADO`) **y** en el servicio, que además exige "distinto del creador" con un error propio (403 `SEGREGACION_FUNCIONES`); la BD lo exige otra vez con CHECK + trigger.
+  - `IdempotencyGuard` no es `final` solo para poder simular la carrera con un mock parcial en la prueba.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué la cabecera se inserta **antes** de validar cantidades (paso 2): si se validara primero, un reintento que espera al primero podría recibir `PRESCRIPCION_EXCEDIDA` en vez de la respuesta original.
+  - Que `FOR UPDATE` en PostgreSQL (READ COMMITTED) espera a la otra transacción y luego **re-lee** la fila confirmada; por eso dos dispensaciones por la última unidad no pueden dejar stock negativo.
+  - La prueba "carrera por la misma clave" en `tests/Feature/Dispensing/DispenseServiceTest.php`: simula el segundo reintento con un mock que la primera vez "no ve" la clave.
+  - Supuestos S-30/S-31: una dispensación mixta queda entera pendiente; las pendientes reservan cantidad de la prescripción, no stock.
+  - El orden de códigos HTTP: 409 conflictos de estado/stock/idempotencia, 422 reglas de prescripción y validación, 403 permisos y segregación.
+- Riesgos o cosas que podrían estar mal:
+  - La concurrencia real (procesos paralelos, sin `RefreshDatabase`) **todavía no está probada**: la hará qa-tester en `tests/Concurrency`. Las pruebas actuales corren en una sola conexión.
+  - `isKeyCollision()` reconoce el UNIQUE por el nombre del índice (`dispensations_idempotency_key_unique`); si se renombra en una migración, la carrera devolvería 500.
+  - Sin middleware de correlación aún: `correlation_id` del kardex y bitácoras queda `null` hasta la Fase 4 (se lee de `Context`).
+  - La vista previa no bloquea: lo que muestra puede cambiar al confirmar (documentado en S-34).
+  - Los tokens de Sanctum no expiran (S-36) y `Hash::check` contra un hash ficticio cuando el correo no existe es una mitigación básica de enumeración, no perfecta.
