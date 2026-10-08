@@ -312,14 +312,30 @@ it('RN-09: una Idempotency-Key con formato inválido responde 422 y no dispensa'
 
     postDispensation($s->payload(1), $key)
         ->assertStatus(422)
-        ->assertJsonPath('error.code', 'VALIDACION');
+        ->assertJsonPath('error.code', 'VALIDACION')
+        ->assertJsonPath(
+            'error.details.fields.idempotency_key.0',
+            'El header Idempotency-Key no es válido: debe tener entre 8 y 100 caracteres (letras, números, guion o guion bajo), por ejemplo un UUID.',
+        );
 
     expect(Dispensation::query()->count())->toBe(0)
         ->and($s->totalStock())->toBe(10);
 })->with([
     'muy corta' => ['abc'],
     'caracteres no permitidos' => ['clave con espacios'],
+    'dos puntos y punto' => ['pedido:2026.10'],
     'demasiado larga' => [str_repeat('a', 101)],
+]);
+
+it('RN-09: acepta claves que no son UUID si cumplen el formato documentado', function (string $key) {
+    $s = DispensingScenario::make();
+    Sanctum::actingAs($s->auxiliar);
+
+    postDispensation($s->payload(1), $key)->assertCreated();
+})->with([
+    'UUID' => ['3f2b8c1e-8d4a-4f7e-9a51-0c6b2d9e7a10'],
+    'mínimo 8 con guion bajo' => ['disp_001'],
+    'máximo 100' => [str_repeat('a', 100)],
 ]);
 
 it('el auditor no puede usar la vista previa FEFO (es parte de dispensar)', function () {

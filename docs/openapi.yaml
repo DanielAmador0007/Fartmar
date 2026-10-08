@@ -314,8 +314,8 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: UUID generado por el cliente para cada intento lógico de dispensación (8–100 caracteres `[A-Za-z0-9_-:.]`). Reutilícelo solo al reintentar la MISMA solicitud.
-      schema: { type: string, example: 3f2b8c1e-8d4a-4f7e-9a51-0c6b2d9e7a10 }
+      description: Clave generada por el cliente para cada intento lógico de dispensación (se recomienda un UUID). 8–100 caracteres `[A-Za-z0-9_-]`. Reutilícela solo al reintentar la MISMA solicitud.
+      schema: { type: string, minLength: 8, maxLength: 100, pattern: '^[A-Za-z0-9_-]+$', example: 3f2b8c1e-8d4a-4f7e-9a51-0c6b2d9e7a10 }
     DispensationId:
       name: id
       in: path

@@ -30,7 +30,8 @@ class StoreDispensationRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'idempotency_key' => ['required', 'string', 'min:8', 'max:100', 'regex:/^[A-Za-z0-9_\-:.]+$/'],
+            // 8 a 100 caracteres: letras, números, guion y guion bajo (un UUID cumple).
+            'idempotency_key' => ['required', 'string', 'min:8', 'max:100', 'regex:/^[A-Za-z0-9_-]+$/'],
             'patient_id' => ['required', 'integer', 'min:1', 'exists:patients,id'],
             'prescription_id' => ['required', 'integer', 'min:1', 'exists:prescriptions,id'],
             'warehouse_id' => ['required', 'integer', 'min:1', 'exists:warehouses,id'],
@@ -49,7 +50,7 @@ class StoreDispensationRequest extends FormRequest
     {
         return [
             'idempotency_key.required' => 'Falta el header Idempotency-Key (un UUID por cada intento de dispensación).',
-            'idempotency_key.*' => 'El header Idempotency-Key no es válido (use un UUID).',
+            'idempotency_key.*' => 'El header Idempotency-Key no es válido: debe tener entre 8 y 100 caracteres (letras, números, guion o guion bajo), por ejemplo un UUID.',
             'items.required' => 'Indique al menos un medicamento a dispensar.',
             'items.*.prescription_item_id.distinct' => 'Un medicamento de la prescripción no puede repetirse.',
             'items.*.quantity.min' => 'La cantidad debe ser mayor que cero.',
