@@ -277,3 +277,55 @@ it('la vista previa FEFO muestra los lotes sin mover stock', function () {
     expect($s->totalStock())->toBe(33)
         ->and(KardexMovement::query()->count())->toBe(0);
 });
+
+it('S-37: un auxiliar desactivado con token vigente no puede dispensar', function () {
+    $s = DispensingScenario::make();
+    $s->auxiliar->update(['is_active' => false]);
+    Sanctum::actingAs($s->auxiliar);
+
+    postDispensation($s->payload(1), (string) Str::uuid())
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'NO_AUTORIZADO');
+
+    expect($s->totalStock())->toBe(10);
+});
+
+it('RN-05: auditor y médico no pueden autorizar ni rechazar controlados', function (string $role) {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
+    Sanctum::actingAs($s->auxiliar);
+    $id = postDispensation($s->payload(2), (string) Str::uuid())->json('data.id');
+
+    Sanctum::actingAs(User::factory()->{$role}()->create());
+    $this->postJson("/api/v1/dispensations/{$id}/authorize")
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'NO_AUTORIZADO');
+    $this->postJson("/api/v1/dispensations/{$id}/reject", ['reason' => 'No corresponde'])
+        ->assertForbidden();
+
+    expect(Dispensation::query()->findOrFail($id)->status->value)->toBe('PENDIENTE_AUTORIZACION')
+        ->and($s->totalStock())->toBe(10);
+})->with(['auditor', 'medico']);
+
+it('RN-09: una Idempotency-Key con formato inválido responde 422 y no dispensa', function (string $key) {
+    $s = DispensingScenario::make();
+    Sanctum::actingAs($s->auxiliar);
+
+    postDispensation($s->payload(1), $key)
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'VALIDACION');
+
+    expect(Dispensation::query()->count())->toBe(0)
+        ->and($s->totalStock())->toBe(10);
+})->with([
+    'muy corta' => ['abc'],
+    'caracteres no permitidos' => ['clave con espacios'],
+    'demasiado larga' => [str_repeat('a', 101)],
+]);
+
+it('el auditor no puede usar la vista previa FEFO (es parte de dispensar)', function () {
+    $s = DispensingScenario::make();
+    Sanctum::actingAs(User::factory()->auditor()->create());
+
+    $this->getJson("/api/v1/dispensations/preview?warehouse_id={$s->warehouse->id}&product_id={$s->product->id}&quantity=1")
+        ->assertForbidden();
+});
