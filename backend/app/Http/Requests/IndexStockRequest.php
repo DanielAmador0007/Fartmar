@@ -21,9 +21,9 @@ class IndexStockRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'warehouse_id' => ['sometimes', 'integer'],
-            'product_id' => ['sometimes', 'integer'],
-            'lot_id' => ['sometimes', 'integer'],
+            'warehouse_id' => ['sometimes', 'integer', 'min:1'],
+            'product_id' => ['sometimes', 'integer', 'min:1'],
+            'lot_id' => ['sometimes', 'integer', 'min:1'],
             'include_empty' => ['sometimes', 'boolean'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ];

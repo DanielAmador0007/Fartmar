@@ -31,11 +31,13 @@ class StoreDispensationRequest extends FormRequest
     {
         return [
             'idempotency_key' => ['required', 'string', 'min:8', 'max:100', 'regex:/^[A-Za-z0-9_\-:.]+$/'],
-            'patient_id' => ['required', 'integer', 'exists:patients,id'],
-            'prescription_id' => ['required', 'integer', 'exists:prescriptions,id'],
-            'warehouse_id' => ['required', 'integer', 'exists:warehouses,id'],
-            'items' => ['required', 'array', 'min:1', 'max:20'],
-            'items.*.prescription_item_id' => ['required', 'integer', 'distinct'],
+            'patient_id' => ['required', 'integer', 'min:1', 'exists:patients,id'],
+            'prescription_id' => ['required', 'integer', 'min:1', 'exists:prescriptions,id'],
+            'warehouse_id' => ['required', 'integer', 'min:1', 'exists:warehouses,id'],
+            // Lista JSON (no objeto) de líneas con exactamente estas dos claves.
+            'items' => ['required', 'list', 'min:1', 'max:20'],
+            'items.*' => ['required', 'array:prescription_item_id,quantity'],
+            'items.*.prescription_item_id' => ['required', 'integer', 'min:1', 'distinct'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:100000'],
         ];
     }
