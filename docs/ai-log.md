@@ -56,3 +56,23 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Si se rota `APP_KEY`/`PATIENT_HASH_KEY` se pierden los documentos cifrados y los hashes; no hay rutina de re-cifrado.
   - El seeder escribe stock y kardex directamente (aún no existe `KardexService`); en Fase 2 conviene que use el servicio.
   - `balance_after` coherente con el saldo depende del servicio (bloqueo + misma transacción); no hay constraint que lo garantice entre filas.
+
+### 2026-10-08 — Fase 1 (cierre): revisión de cobertura de constraints y seeders
+- Agente: qa-tester (Claude Code)
+- Qué generó la IA:
+  - Inventario de cada CHECK, UNIQUE, FK compuesta y trigger de las migraciones `2026_10_08_21*` contra las pruebas de `tests/Feature/Database`. Se encontraron ~30 constraints sin prueba que intentara violarlos (códigos vacíos/duplicados del catálogo, tipo de documento, acción vacía en bitácoras, `rejecter_differs`, `idempotency_key` vacía, UNIQUE de líneas, FK lote/producto en kardex y traslados, estado de discrepancias, etc.).
+  - 33 pruebas nuevas (47 → 80 en total, 214 aserciones), incluidos casos límite que **deben aceptarse**: `quantity_dispensed == quantity_prescribed`, stock en 0, `balance_after = 0`, vigencia del mismo día, `quantity_received` 0 y = despachado, AJUSTE positivo, anular antes del despacho.
+  - Pruebas de los triggers por **UPDATE** (así los usará el servicio en Fase 2): autorizar controlado con auxiliar, aprobar traslado con auxiliar, pasar a ANULADO un traslado EN_TRANSITO.
+  - Pruebas del seeder: lote vencido y controlado con existencias, re-ejecución sin alterar existencias ni `quantity_dispensed`, datos sintéticos (`@fartmar.test`, documentos `99…`, teléfonos `300000…`, sin PII en claro en la tabla).
+  - Migración `2026_10_08_210900_add_dispensation_items_integrity_triggers.php` (commit `fix(datos)`).
+- Qué decisión tomó y por qué:
+  - **Bug 1 (RN-05):** el CHECK `dispensations_controlled_needs_authorization` dependía de `requires_authorization`, que fija la aplicación. Si el servicio lo ponía en `false` para Morfina, la BD aceptaba una dispensación COMPLETADA sin regente. Ahora un trigger en `dispensation_items` deriva la exigencia de `products.is_controlled`, y otro en `dispensations` impide apagar la marca después.
+  - **Bug 2 (RN-04):** `dispensation_items.prescription_item_id` podía apuntar a una línea de la prescripción de **otro paciente** (la FK compuesta de la cabecera no se propagaba a las líneas). Ahora un trigger exige que la línea pertenezca a `dispensations.prescription_id`.
+  - Ambos se escribieron primero como pruebas que fallaban ("La base de datos aceptó una operación que debía rechazar") y luego se corrigieron. Se usaron triggers porque son reglas entre tablas (un CHECK solo ve la fila).
+- Puntos que Daniel debe revisar/entender:
+  - El orden de inserción que exige ahora la BD: cabecera con `requires_authorization` ya calculado **antes** de insertar las líneas.
+  - Las pruebas que verifican "esto se acepta" son tan importantes como las de rechazo: evitan constraints demasiado estrictos que romperían el flujo normal.
+- Riesgos o cosas que podrían estar mal:
+  - La BD valida la fila resultante, no la transición: un UPDATE que borre `dispatched_at` y ponga `ANULADO` en la misma sentencia pasaría (documentado en `docs/modelo-datos.md`).
+  - No se exige por BD que `resolved_by` de una discrepancia sea regente, ni que el usuario que autoriza/aprueba esté activo (`is_active`), ni que una dispensación PENDIENTE no tenga lotes. Candidatos a reforzar si se decide.
+  - Si cambia `products.is_controlled` después de crear dispensaciones, los triggers no revisan las existentes.
