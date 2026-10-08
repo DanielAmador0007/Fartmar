@@ -1,0 +1,519 @@
+openapi: 3.1.0
+info:
+  title: FARTMAR IPS — API de dispensación e inventario
+  version: 0.2.0
+  description: |
+    API REST del sistema de dispensación, inventario por lote y traslados.
+
+    - Autenticación: token personal de Sanctum en `Authorization: Bearer <token>` (obtenido en `POST /auth/login`).
+    - Todos los errores usan el mismo formato `{ "error": { "code", "message", "details" } }`.
+    - Fechas de vencimiento en `YYYY-MM-DD`; "hoy" se calcula en `America/Bogota` (S-13). Un lote que vence hoy aún se puede dispensar (S-14).
+    - Ningún endpoint de dispensación expone nombre ni documento del paciente: solo `patient_id`.
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Desarrollo local (docker compose)
+
+tags:
+  - name: Autenticación
+  - name: Dispensación
+  - name: Inventario
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión y obtener un token
+      security: []
+      description: Limitado a 10 intentos por minuto. Usuarios inactivos no pueden iniciar sesión.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: auxiliar@fartmar.test }
+                password: { type: string, example: password }
+                device_name: { type: string, example: spa }
+      responses:
+        '200':
+          description: Token emitido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  token_type: { type: string, example: Bearer }
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /auth/logout:
+    post:
+      tags: [Autenticación]
+      summary: Revocar el token actual
+      responses:
+        '204': { description: Token revocado }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /auth/me:
+    get:
+      tags: [Autenticación]
+      summary: Usuario autenticado
+      responses:
+        '200':
+          description: Usuario
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /dispensations:
+    post:
+      tags: [Dispensación]
+      summary: Crear una dispensación (idempotente)
+      description: |
+        Roles: `auxiliar_farmacia`, `regente_farmacia`.
+
+        Flujo (una sola transacción, reintentada hasta 3 veces ante deadlock):
+        1. Si la `Idempotency-Key` ya existe con el mismo contenido → devuelve la original (200 + `Idempotent-Replayed: true`), sin mover stock. Con otro contenido (o de otro usuario) → 409 `IDEMPOTENCIA_CONFLICTO`.
+        2. Valida que la prescripción sea del paciente, esté vigente y que lo pedido no supere lo prescrito menos lo ya entregado y lo reservado por pendientes.
+        3. Si algún producto es de control especial → `PENDIENTE_AUTORIZACION` sin mover stock (RN-05).
+        4. Si no → asigna lotes FEFO (excluye vencidos), descuenta stock, escribe kardex `SALIDA_DISPENSACION` y queda `COMPLETADA`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DispensationRequest' }
+      responses:
+        '201':
+          description: Dispensación creada (COMPLETADA o PENDIENTE_AUTORIZACION)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DispensationEnvelope' }
+        '200':
+          description: Reintento con la misma clave y el mismo contenido; se devuelve la original
+          headers:
+            Idempotent-Replayed:
+              schema: { type: string, enum: ['true'] }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DispensationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`STOCK_INSUFICIENTE` (con `requested` y `available`) o `IDEMPOTENCIA_CONFLICTO`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                stock:
+                  value:
+                    error:
+                      code: STOCK_INSUFICIENTE
+                      message: 'No hay existencias suficientes en la bodega: se pidieron 3 unidades y solo hay 2 disponibles en lotes no vencidos.'
+                      details: { warehouse_id: 1, product_id: 4, requested: 3, available: 2 }
+                idempotencia:
+                  value:
+                    error:
+                      code: IDEMPOTENCIA_CONFLICTO
+                      message: Esta solicitud ya se registró antes con datos diferentes. Si es una dispensación nueva, vuelva a intentarlo desde la pantalla (se generará una clave nueva).
+                      details: { idempotency_key: 6f1c... }
+        '422':
+          description: '`VALIDACION` (incluye falta de `Idempotency-Key`), `PRESCRIPCION_EXCEDIDA` o `PRESCRIPCION_NO_VIGENTE`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                excedida:
+                  value:
+                    error:
+                      code: PRESCRIPCION_EXCEDIDA
+                      message: Se pidieron 6 unidades pero a la prescripción solo le quedan 5 por entregar (prescritas 5, ya entregadas 0, pendientes de autorización 0).
+                      details: { prescription_item_id: 7, requested: 6, quantity_prescribed: 5, quantity_dispensed: 0, quantity_pending_authorization: 0, remaining: 5 }
+                vencida:
+                  value:
+                    error:
+                      code: PRESCRIPCION_NO_VIGENTE
+                      message: La prescripción venció el 2026-10-01; pida al médico una nueva fórmula.
+                      details: { prescription_id: 3, reason: VENCIDA, valid_until: '2026-10-01' }
+
+  /dispensations/preview:
+    get:
+      tags: [Dispensación]
+      summary: Vista previa FEFO (no mueve stock)
+      description: |
+        Muestra qué lotes saldrían hoy para una cantidad, en orden FEFO y sin lotes vencidos.
+        No bloquea filas: el resultado puede cambiar antes de confirmar. Para controlados es orientativa
+        (los lotes se fijan al autorizar). Roles: `auxiliar_farmacia`, `regente_farmacia`.
+      parameters:
+        - { name: warehouse_id, in: query, required: true, schema: { type: integer } }
+        - { name: product_id, in: query, required: true, schema: { type: integer } }
+        - { name: quantity, in: query, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Lotes asignados
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/FefoPreview' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`STOCK_INSUFICIENTE`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /dispensations/{id}:
+    get:
+      tags: [Dispensación]
+      summary: Consultar una dispensación
+      description: 'Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.'
+      parameters:
+        - $ref: '#/components/parameters/DispensationId'
+      responses:
+        '200':
+          description: Dispensación
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DispensationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /dispensations/{id}/authorize:
+    post:
+      tags: [Dispensación]
+      summary: Autorizar un medicamento de control especial (RN-05)
+      description: |
+        Solo `regente_farmacia` activo **distinto** de quien creó la dispensación. Al autorizar se asignan
+        los lotes FEFO, se descuenta el stock y se escribe el kardex (usuario = regente que autoriza).
+        Se revalidan vigencia de la prescripción y existencias.
+      parameters:
+        - $ref: '#/components/parameters/DispensationId'
+      responses:
+        '200':
+          description: Dispensación COMPLETADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DispensationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: '`NO_AUTORIZADO` (rol) o `SEGREGACION_FUNCIONES` (el mismo usuario que la creó)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`TRANSICION_INVALIDA` (no está pendiente) o `STOCK_INSUFICIENTE`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`PRESCRIPCION_NO_VIGENTE` o `PRESCRIPCION_EXCEDIDA`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /dispensations/{id}/reject:
+    post:
+      tags: [Dispensación]
+      summary: Rechazar un medicamento de control especial
+      description: Solo `regente_farmacia` distinto del creador. No mueve stock; libera la cantidad reservada.
+      parameters:
+        - $ref: '#/components/parameters/DispensationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200':
+          description: Dispensación RECHAZADA
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DispensationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: '`NO_AUTORIZADO` o `SEGREGACION_FUNCIONES`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`TRANSICION_INVALIDA`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /stocks:
+    get:
+      tags: [Inventario]
+      summary: Consultar existencias por bodega, producto y lote
+      description: |
+        Orden: bodega, producto y FEFO (vencimiento, lote). Por defecto oculta existencias en 0.
+        Los lotes vencidos se muestran con `is_expired: true` (no se dispensan).
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
+      parameters:
+        - { name: warehouse_id, in: query, schema: { type: integer } }
+        - { name: product_id, in: query, schema: { type: integer } }
+        - { name: lot_id, in: query, schema: { type: integer } }
+        - { name: include_empty, in: query, schema: { type: boolean, default: false } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de existencias
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Stock' }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: UUID generado por el cliente para cada intento lógico de dispensación (8–100 caracteres `[A-Za-z0-9_-:.]`). Reutilícelo solo al reintentar la MISMA solicitud.
+      schema: { type: string, example: 3f2b8c1e-8d4a-4f7e-9a51-0c6b2d9e7a10 }
+    DispensationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    Unauthenticated:
+      description: '`NO_AUTENTICADO`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvalidCredentials:
+      description: '`CREDENCIALES_INVALIDAS`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: '`NO_AUTORIZADO`: el rol no tiene permiso'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: '`NO_ENCONTRADO`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: '`VALIDACION`: `details.fields` trae los errores por campo'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: '`DEMASIADAS_SOLICITUDES`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              enum:
+                - STOCK_INSUFICIENTE
+                - LOTE_VENCIDO
+                - PRESCRIPCION_EXCEDIDA
+                - PRESCRIPCION_NO_VIGENTE
+                - TRANSICION_INVALIDA
+                - SEGREGACION_FUNCIONES
+                - IDEMPOTENCIA_CONFLICTO
+                - CREDENCIALES_INVALIDAS
+                - VALIDACION
+                - NO_AUTENTICADO
+                - NO_AUTORIZADO
+                - NO_ENCONTRADO
+                - DEMASIADAS_SOLICITUDES
+            message: { type: string, description: Mensaje en español para el usuario final }
+            details: { type: object, additionalProperties: true }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [auxiliar_farmacia, regente_farmacia, medico, auditor, admin] }
+
+    UserSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        role: { type: string }
+
+    DispensationRequest:
+      type: object
+      required: [patient_id, prescription_id, warehouse_id, items]
+      properties:
+        patient_id: { type: integer }
+        prescription_id: { type: integer }
+        warehouse_id: { type: integer }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [prescription_item_id, quantity]
+            properties:
+              prescription_item_id: { type: integer, description: Línea de la prescripción (no repetir) }
+              quantity: { type: integer, minimum: 1 }
+      example:
+        patient_id: 1
+        prescription_id: 1
+        warehouse_id: 1
+        items: [{ prescription_item_id: 1, quantity: 10 }]
+
+    DispensationEnvelope:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/Dispensation' }
+
+    Dispensation:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { type: string, enum: [PENDIENTE_AUTORIZACION, COMPLETADA, RECHAZADA] }
+        requires_authorization: { type: boolean }
+        patient_id: { type: integer, description: Solo el ID; los datos del paciente se consultan aparte (enmascarados según rol) }
+        prescription:
+          type: object
+          properties:
+            id: { type: integer }
+            number: { type: string }
+        warehouse:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            name: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              prescription_item_id: { type: integer }
+              product:
+                type: object
+                properties:
+                  id: { type: integer }
+                  code: { type: string }
+                  name: { type: string }
+                  is_controlled: { type: boolean }
+              quantity: { type: integer }
+              lots:
+                type: array
+                description: Lotes FEFO de los que salió (vacío mientras está pendiente de autorización)
+                items: { $ref: '#/components/schemas/LotAllocation' }
+        created_by: { $ref: '#/components/schemas/UserSummary' }
+        authorized_by:
+          oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }]
+        authorized_at: { type: [string, 'null'], format: date-time }
+        rejected_by:
+          oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }]
+        rejected_at: { type: [string, 'null'], format: date-time }
+        rejection_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    LotAllocation:
+      type: object
+      properties:
+        lot_id: { type: integer }
+        lot_number: { type: string }
+        expires_at: { type: string, format: date }
+        quantity: { type: integer }
+
+    FefoPreview:
+      type: object
+      properties:
+        warehouse_id: { type: integer }
+        product:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            name: { type: string }
+            is_controlled: { type: boolean }
+        quantity: { type: integer }
+        requires_authorization: { type: boolean }
+        lots:
+          type: array
+          items: { $ref: '#/components/schemas/LotAllocation' }
+
+    Stock:
+      type: object
+      properties:
+        id: { type: integer }
+        warehouse:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            name: { type: string }
+        product:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            name: { type: string }
+            is_controlled: { type: boolean }
+        lot:
+          type: object
+          properties:
+            id: { type: integer }
+            lot_number: { type: string }
+            expires_at: { type: string, format: date }
+            is_expired: { type: boolean }
+        quantity: { type: integer }
