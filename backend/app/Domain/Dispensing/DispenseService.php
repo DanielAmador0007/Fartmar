@@ -32,9 +32,13 @@ use LogicException;
 /**
  * Dispensación de medicamentos (RN-01 a RN-06, RN-09).
  *
- * Orden de bloqueo, igual en todos los caminos (evita deadlocks):
- *   dispensación -> prescripción -> líneas de prescripción (por id)
- *   -> existencias (por product_id y luego expires_at, lot_id).
+ * Orden de bloqueo (evita deadlocks):
+ *   crear:     prescripción -> líneas (por id) -> [INSERT dispensación]
+ *              -> existencias (por product_id y luego expires_at, lot_id)
+ *   autorizar: dispensación -> prescripción -> líneas -> existencias
+ * La prescripción se bloquea ANTES de insertar filas que la referencian por
+ * FK (el INSERT toma FOR KEY SHARE sobre ella). La dispensación que se
+ * autoriza ya existe, así que bloquearla primero no choca con "crear".
  *
  * DB::transaction(..., 3): si PostgreSQL detecta un deadlock o un fallo de
  * serialización, Laravel reintenta la transacción completa hasta 3 veces.
@@ -88,7 +92,7 @@ final class DispenseService
             $this->assertSecondRegente($locked, $regente, 'autorizar la dispensación');
 
             $quantities = $locked->items()->pluck('quantity', 'prescription_item_id')->map(fn ($q) => (int) $q)->all();
-            $lines = $this->lockAndValidatePrescription($locked, $quantities);
+            $lines = $this->lockAndValidateLines($this->lockPrescription($locked->prescription_id), $quantities, $locked->id);
 
             $this->executeOutflow($locked, $lines, $regente);
 
@@ -178,9 +182,32 @@ final class DispenseService
 
         $requiresAuthorization = $lines->contains(fn (PrescriptionItem $line) => $line->product->is_controlled);
 
-        // 3. Reclamar la Idempotency-Key ANTES de validar cantidades: si otro
-        //    reintento con la misma clave está en curso, este INSERT espera en
-        //    el índice UNIQUE y falla al confirmar el otro (ver create()).
+        // 3. Bloquear la prescripción ANTES del INSERT de la dispensación: ese
+        //    INSERT toma un bloqueo FOR KEY SHARE sobre la prescripción (por
+        //    la FK); si varias transacciones lo tomaran primero y después
+        //    pidieran FOR UPDATE sobre la misma prescripción, se esperarían
+        //    entre sí (deadlock, visto en la prueba de concurrencia). Así,
+        //    todo lo que toca una prescripción se serializa en este punto.
+        $lockedPrescription = $this->lockPrescription($prescription->id);
+
+        // 4. Volver a mirar la clave con el bloqueo tomado: si un reintento
+        //    con la misma clave confirmó mientras este esperaba, ya es visible
+        //    y se devuelve, en vez de fallar por saldo agotado al validar.
+        $existing = $this->idempotency->findReplay($idempotencyKey, $requestHash);
+        if ($existing !== null) {
+            return new DispenseResult($existing, true);
+        }
+
+        // 5. Bloquear líneas y validar vigencia y saldo (RN-04).
+        $quantities = [];
+        foreach ($data->items as $item) {
+            $quantities[$item->prescriptionItemId] = $item->quantity;
+        }
+        $lockedLines = $this->lockAndValidateLines($lockedPrescription, $quantities);
+
+        // 6. Reclamar la Idempotency-Key. Si otro request con la misma clave
+        //    (y otra prescripción) está en curso, este INSERT espera en el
+        //    índice UNIQUE y falla cuando el otro confirma (ver create()).
         //    requires_authorization debe ir antes de las líneas (trigger RN-05).
         $dispensation = Dispensation::query()->create([
             'patient_id' => $data->patientId,
@@ -194,13 +221,6 @@ final class DispenseService
             'correlation_id' => Context::get('correlation_id'),
         ]);
 
-        // 4. Bloquear prescripción y líneas; validar vigencia y saldo (RN-04).
-        $quantities = [];
-        foreach ($data->items as $item) {
-            $quantities[$item->prescriptionItemId] = $item->quantity;
-        }
-        $lockedLines = $this->lockAndValidatePrescription($dispensation, $quantities);
-
         foreach ($lockedLines as $line) {
             DispensationItem::query()->create([
                 'dispensation_id' => $dispensation->id,
@@ -210,7 +230,7 @@ final class DispenseService
             ]);
         }
 
-        // 5. Controlado: queda pendiente sin tocar stock. Si no: FEFO y salida.
+        // 7. Controlado: queda pendiente sin tocar stock. Si no: FEFO y salida.
         if (! $requiresAuthorization) {
             $this->executeOutflow($dispensation, $lockedLines, $user);
         }
@@ -225,16 +245,26 @@ final class DispenseService
     }
 
     /**
-     * Bloquea la prescripción y las líneas pedidas (en orden de id) y valida:
-     * vigencia (S-21) y que lo pedido no supere lo prescrito menos lo ya
-     * entregado y lo reservado por otras dispensaciones pendientes (RN-04).
+     * Punto de serialización por prescripción: dos dispensaciones (o
+     * autorizaciones) sobre la misma prescripción se esperan aquí.
+     */
+    private function lockPrescription(int $prescriptionId): Prescription
+    {
+        return Prescription::query()->lockForUpdate()->findOrFail($prescriptionId);
+    }
+
+    /**
+     * Con la prescripción ya bloqueada, bloquea las líneas pedidas (en orden
+     * de id) y valida: vigencia (S-21) y que lo pedido no supere lo prescrito
+     * menos lo ya entregado y lo reservado por otras dispensaciones
+     * pendientes (RN-04).
      *
      * @param  array<int, int>  $quantities  prescription_item_id => cantidad
+     * @param  int|null  $excludeDispensationId  la dispensación que se autoriza (su propia reserva no cuenta)
      * @return Collection<int, PrescriptionItem>
      */
-    private function lockAndValidatePrescription(Dispensation $dispensation, array $quantities): Collection
+    private function lockAndValidateLines(Prescription $prescription, array $quantities, ?int $excludeDispensationId = null): Collection
     {
-        $prescription = Prescription::query()->lockForUpdate()->findOrFail($dispensation->prescription_id);
         $this->assertPrescriptionValid($prescription);
 
         $lines = PrescriptionItem::query()
@@ -244,7 +274,7 @@ final class DispenseService
             ->lockForUpdate()
             ->get();
 
-        $pending = $this->pendingQuantities(array_keys($quantities), $dispensation->id);
+        $pending = $this->pendingQuantities(array_keys($quantities), $excludeDispensationId);
 
         foreach ($lines as $line) {
             $requested = $quantities[$line->id];
@@ -277,12 +307,12 @@ final class DispenseService
      * @param  list<int>  $prescriptionItemIds
      * @return array<int, int> prescription_item_id => cantidad
      */
-    private function pendingQuantities(array $prescriptionItemIds, int $excludeDispensationId): array
+    private function pendingQuantities(array $prescriptionItemIds, ?int $excludeDispensationId): array
     {
         return DispensationItem::query()
             ->join('dispensations', 'dispensations.id', '=', 'dispensation_items.dispensation_id')
             ->where('dispensations.status', DispensationStatus::PendienteAutorizacion->value)
-            ->where('dispensations.id', '<>', $excludeDispensationId)
+            ->when($excludeDispensationId !== null, fn ($q) => $q->where('dispensations.id', '<>', $excludeDispensationId))
             ->whereIn('dispensation_items.prescription_item_id', $prescriptionItemIds)
             ->groupBy('dispensation_items.prescription_item_id')
             ->selectRaw('dispensation_items.prescription_item_id, SUM(dispensation_items.quantity) AS reserved')

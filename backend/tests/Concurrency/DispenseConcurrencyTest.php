@@ -174,6 +174,28 @@ it('RN-09: 8 procesos con la MISMA Idempotency-Key — una sola dispensación y 
         ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
 });
 
+it('RN-09: 8 procesos con la MISMA clave pidiendo TODO el saldo — todos reciben la misma dispensación, ninguno PRESCRIPCION_*', function () {
+    // Los reintentos esperan el bloqueo de la prescripción; cuando lo
+    // obtienen, el primero ya entregó todo. Deben recibir el replay, no un
+    // error de saldo agotado (por eso se revisa la clave tras el bloqueo).
+    $warehouse = Warehouse::factory()->create();
+    $product = Product::factory()->create();
+    $lot = receiveStock($warehouse, $product, 30, 10);
+    [$prescription, [$item]] = activePrescription([$product], 2);
+    $user = User::factory()->auxiliar()->create();
+    $key = (string) Str::uuid();
+
+    $results = ConcurrentDispenser::run(array_fill(0, 8, dispenseJob($user, $prescription, $warehouse, [[$item, 2]], $key)));
+
+    $ids = array_unique(array_map(fn (array $r) => $r['dispensation_id'] ?? null, $results));
+    expect(outcomes($results))->toBe(['OK' => 8])
+        ->and($ids)->toHaveCount(1)
+        ->and(Dispensation::query()->count())->toBe(1)
+        ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(1)
+        ->and(stockOf($warehouse, $lot))->toBe(8)
+        ->and($item->fresh()?->quantity_dispensed)->toBe(2);
+});
+
 it('sin deadlocks: dispensaciones de dos productos con líneas en orden inverso terminan todas', function () {
     $warehouse = Warehouse::factory()->create();
     [$a, $b] = [Product::factory()->create(), Product::factory()->create()];
@@ -201,6 +223,63 @@ it('sin deadlocks: dispensaciones de dos productos con líneas en orden inverso 
         ->and(stockOf($warehouse, $lotA))->toBe(12)
         ->and(stockOf($warehouse, $lotB))->toBe(12)
         ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(16)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});
+
+it('RN-04: 8 procesos piden 1 sobre la MISMA prescripción de 5 (stock sobrado) — salen exactamente 5', function () {
+    // La disputa es el saldo de la línea, no el stock (hay 20). La
+    // prescripción tiene una segunda línea sin entregar para que NO pase a
+    // COMPLETADA al llegar a 5/5: así los rechazados ven el saldo agotado
+    // (PRESCRIPCION_EXCEDIDA). Con una sola línea ver la prueba siguiente.
+    $warehouse = Warehouse::factory()->create();
+    [$a, $b] = [Product::factory()->create(), Product::factory()->create()];
+    receiveStock($warehouse, $a, 30, 20);
+    [$prescription, [$itemA]] = activePrescription([$a, $b], 5);
+    $user = User::factory()->auxiliar()->create();
+
+    $jobs = [];
+    foreach (range(1, 8) as $i) {
+        $jobs[] = dispenseJob($user, $prescription, $warehouse, [[$itemA, 1]]);
+    }
+
+    $deadlocksBefore = ConcurrentDispenser::deadlocksDetected();
+    $results = ConcurrentDispenser::run($jobs);
+
+    // Antes de la corrección de la revisión de Fase 2 salía OK=1 y 7
+    // deadlocks (40P01): el INSERT de la dispensación tomaba FOR KEY SHARE
+    // sobre la prescripción y luego todos pedían FOR UPDATE sobre ella.
+    expect(ConcurrentDispenser::deadlocksDetected() - $deadlocksBefore)->toBe(0)
+        ->and(outcomes($results))->toBe(['OK' => 5, 'PRESCRIPCION_EXCEDIDA' => 3])
+        ->and($itemA->fresh()?->quantity_dispensed)->toBe(5)
+        ->and(Dispensation::query()->count())->toBe(5)
+        ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(5)
+        ->and((int) Stock::query()->where('product_id', $a->id)->sum('quantity'))->toBe(15)
+        ->and($prescription->fresh()?->status->value)->toBe('ACTIVA')
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});
+
+it('RN-04/S-39: con una sola línea, al completarse la prescripción los demás reciben PRESCRIPCION_NO_VIGENTE', function () {
+    $warehouse = Warehouse::factory()->create();
+    $product = Product::factory()->create();
+    receiveStock($warehouse, $product, 30, 20);
+    [$prescription, [$item]] = activePrescription([$product], 5);
+    $user = User::factory()->auxiliar()->create();
+
+    $jobs = [];
+    foreach (range(1, 8) as $i) {
+        $jobs[] = dispenseJob($user, $prescription, $warehouse, [[$item, 1]]);
+    }
+
+    $deadlocksBefore = ConcurrentDispenser::deadlocksDetected();
+    $results = ConcurrentDispenser::run($jobs);
+
+    // El 5.º deja la prescripción COMPLETADA (S-33) y los que esperaban el
+    // bloqueo de la prescripción ven ese estado (S-39): nunca hay un 6.º OK.
+    expect(ConcurrentDispenser::deadlocksDetected() - $deadlocksBefore)->toBe(0)
+        ->and(outcomes($results))->toBe(['OK' => 5, 'PRESCRIPCION_NO_VIGENTE' => 3])
+        ->and($item->fresh()?->quantity_dispensed)->toBe(5)
+        ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(5)
+        ->and($prescription->fresh()?->status->value)->toBe('COMPLETADA')
         ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
 });
 
