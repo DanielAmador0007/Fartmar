@@ -11,8 +11,10 @@
 |   php tests/Concurrency/bin/dispense-worker.php '<json>'
 |
 | JSON de entrada:
-|   user_id, patient_id, prescription_id, warehouse_id,
-|   items: [[prescription_item_id, quantity], ...], idempotency_key,
+|   mode: "create" (por defecto) | "authorize"
+|   create:    user_id, patient_id, prescription_id, warehouse_id,
+|              items: [[prescription_item_id, quantity], ...], idempotency_key
+|   authorize: user_id (regente), dispensation_id
 |   barrier (int, clave del advisory lock), unsafe (bool, opcional)
 |
 | Pasos:
@@ -20,7 +22,7 @@
 |   2. Espera en la barrera: pg_advisory_lock_shared(barrier). La prueba tiene
 |      ese lock en modo exclusivo y lo suelta cuando TODOS los workers están
 |      esperando, así arrancan prácticamente a la vez.
-|   3. Llama a DispenseService::create (el código real de producción).
+|   3. Llama a DispenseService::create o ::authorize (código real de producción).
 |   4. Imprime UNA línea JSON con el resultado y termina con código 0.
 |      Solo un error inesperado (no de negocio ni CHECK) termina con código 1.
 |
@@ -35,6 +37,7 @@ use App\Domain\Dispensing\DispenseData;
 use App\Domain\Dispensing\DispenseItemData;
 use App\Domain\Dispensing\DispenseService;
 use App\Domain\Exceptions\BusinessRuleException;
+use App\Models\Dispensation;
 use App\Models\User;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Connection;
@@ -62,7 +65,7 @@ if (! str_ends_with($database, '_test')) {
     respond(['outcome' => 'UNEXPECTED', 'message' => "El worker solo corre contra una BD *_test (recibió {$database})."], 2);
 }
 
-/** @var array{user_id: int, patient_id: int, prescription_id: int, warehouse_id: int, items: list<array{0: int, 1: int}>, idempotency_key: string, barrier: int, unsafe?: bool} $job */
+/** @var array{mode?: string, user_id: int, patient_id?: int, prescription_id?: int, warehouse_id?: int, items?: list<array{0: int, 1: int}>, idempotency_key?: string, dispensation_id?: int, barrier: int, unsafe?: bool} $job */
 $job = json_decode($argv[1] ?? '', true, flags: JSON_THROW_ON_ERROR);
 
 /** @var Connection $connection */
@@ -86,25 +89,31 @@ if ($job['unsafe'] ?? false) {
 }
 
 $user = User::query()->findOrFail($job['user_id']);
-$data = new DispenseData(
-    $job['patient_id'],
-    $job['prescription_id'],
-    $job['warehouse_id'],
-    array_map(fn (array $item) => new DispenseItemData($item[0], $item[1]), $job['items']),
-);
+
+// Lo que lee la BD se prepara ANTES de la barrera; después solo corre la acción.
+if (($job['mode'] ?? 'create') === 'authorize') {
+    $dispensation = Dispensation::query()->findOrFail($job['dispensation_id']);
+    $action = fn (): array => ['dispensation_id' => app(DispenseService::class)->authorize($dispensation, $user)->id];
+} else {
+    $data = new DispenseData(
+        $job['patient_id'],
+        $job['prescription_id'],
+        $job['warehouse_id'],
+        array_map(fn (array $item) => new DispenseItemData($item[0], $item[1]), $job['items']),
+    );
+    $action = function () use ($user, $data, $job): array {
+        $result = app(DispenseService::class)->create($user, $data, $job['idempotency_key']);
+
+        return ['dispensation_id' => $result->dispensation->id, 'replayed' => $result->replayed];
+    };
+}
 
 // Barrera: bloquea hasta que la prueba suelte el advisory lock exclusivo.
 $connection->select('select pg_advisory_lock_shared(?)', [$job['barrier']]);
 $connection->select('select pg_advisory_unlock_shared(?)', [$job['barrier']]);
 
 try {
-    $result = app(DispenseService::class)->create($user, $data, $job['idempotency_key']);
-
-    respond([
-        'outcome' => 'OK',
-        'dispensation_id' => $result->dispensation->id,
-        'replayed' => $result->replayed,
-    ]);
+    respond(['outcome' => 'OK'] + $action());
 } catch (BusinessRuleException $e) {
     respond(['outcome' => $e->errorCode()]);
 } catch (QueryException $e) {

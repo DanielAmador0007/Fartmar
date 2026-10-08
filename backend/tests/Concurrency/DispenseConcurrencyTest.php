@@ -12,7 +12,11 @@
 | - Grupo "concurrency": ./vendor/bin/pest --group=concurrency
 */
 
+use App\Domain\Dispensing\DispenseData;
+use App\Domain\Dispensing\DispenseItemData;
+use App\Domain\Dispensing\DispenseService;
 use App\Domain\Inventory\StockService;
+use App\Enums\DispensationStatus;
 use App\Enums\KardexType;
 use App\Models\Dispensation;
 use App\Models\DispensationItemLot;
@@ -280,6 +284,37 @@ it('RN-04/S-39: con una sola línea, al completarse la prescripción los demás 
         ->and($item->fresh()?->quantity_dispensed)->toBe(5)
         ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(5)
         ->and($prescription->fresh()?->status->value)->toBe('COMPLETADA')
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});
+
+it('RN-05: dos regentes autorizan a la vez el mismo controlado — exactamente 1 autoriza y una sola salida', function () {
+    $warehouse = Warehouse::factory()->create();
+    $product = Product::factory()->controlled()->create();
+    $lot = receiveStock($warehouse, $product, 30, 10);
+    [$prescription, [$item]] = activePrescription([$product], 5);
+    $auxiliar = User::factory()->auxiliar()->create();
+
+    $pending = app(DispenseService::class)->create(
+        $auxiliar,
+        new DispenseData($prescription->patient_id, $prescription->id, $warehouse->id, [new DispenseItemData($item->id, 2)]),
+        (string) Str::uuid(),
+    )->dispensation;
+    expect($pending->status)->toBe(DispensationStatus::PendienteAutorizacion);
+
+    [$regenteA, $regenteB] = [User::factory()->regente()->create(), User::factory()->regente()->create()];
+    $results = ConcurrentDispenser::run([
+        ['mode' => 'authorize', 'user_id' => $regenteA->id, 'dispensation_id' => $pending->id],
+        ['mode' => 'authorize', 'user_id' => $regenteB->id, 'dispensation_id' => $pending->id],
+    ]);
+
+    $fresh = $pending->fresh();
+    expect(outcomes($results))->toBe(['OK' => 1, 'TRANSICION_INVALIDA' => 1])
+        ->and($fresh?->status)->toBe(DispensationStatus::Completada)
+        ->and($fresh?->authorized_by)->toBeIn([$regenteA->id, $regenteB->id])
+        ->and(KardexMovement::query()->where('type', KardexType::SalidaDispensacion)->count())->toBe(1)
+        ->and((int) DispensationItemLot::query()->sum('quantity'))->toBe(2)
+        ->and(stockOf($warehouse, $lot))->toBe(8)
+        ->and($item->fresh()?->quantity_dispensed)->toBe(2)
         ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
 });
 
