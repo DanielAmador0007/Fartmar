@@ -85,3 +85,53 @@ it('incluye los casos de prueba del enunciado', function () {
     expect($controlledPrescriptions)->toBeGreaterThanOrEqual(1)
         ->and(Patient::query()->whereHas('prescriptions')->count())->toBe(3);
 });
+
+/*
+| Agregadas en la revisión de QA (Fase 1, cierre).
+*/
+
+it('el lote vencido y el controlado tienen existencias (sirven para probar RN-01 y RN-05)', function () {
+    $this->seed(DatabaseSeeder::class);
+    $today = CarbonImmutable::now(config('fartmar.business_timezone'))->startOfDay();
+
+    $expiredWithStock = Stock::query()
+        ->where('quantity', '>', 0)
+        ->whereHas('lot', fn ($q) => $q->where('expires_at', '<', $today))
+        ->exists();
+    $controlledWithStock = Stock::query()
+        ->where('quantity', '>', 0)
+        ->whereHas('lot', fn ($q) => $q->where('expires_at', '>=', $today)->whereHas('product', fn ($p) => $p->where('is_controlled', true)))
+        ->exists();
+
+    expect($expiredWithStock)->toBeTrue()->and($controlledWithStock)->toBeTrue();
+});
+
+it('re-ejecutar el seeder no altera existencias ni lo ya dispensado', function () {
+    $this->seed(DatabaseSeeder::class);
+    $stocksBefore = Stock::query()->orderBy('id')->pluck('quantity', 'id')->all();
+    $item = DB::table('prescription_items')->orderBy('id')->first();
+    DB::update('UPDATE prescription_items SET quantity_dispensed = 2 WHERE id = ?', [$item->id]);
+
+    $this->seed(DatabaseSeeder::class);
+
+    expect(Stock::query()->orderBy('id')->pluck('quantity', 'id')->all())->toBe($stocksBefore)
+        ->and(DB::table('prescription_items')->where('id', $item->id)->value('quantity_dispensed'))->toBe(2);
+});
+
+it('solo contiene datos sintéticos: dominio .test, documentos 99…, teléfonos 300000… y apellidos marcados', function () {
+    $this->seed(DatabaseSeeder::class);
+
+    foreach (User::query()->pluck('email') as $email) {
+        expect($email)->toEndWith('@fartmar.test');
+    }
+
+    foreach (Patient::all() as $patient) {
+        expect($patient->document_number)->toStartWith('99')
+            ->and($patient->phone)->toStartWith('300000')
+            ->and($patient->last_name)->toMatch('/Ficti|Sint[eé]tic|Inventad|Demo|Prueba|Ejemplo/u');
+    }
+
+    // Ni el documento ni el teléfono aparecen en claro en la tabla.
+    $raw = json_encode(DB::table('patients')->get(), JSON_THROW_ON_ERROR);
+    expect($raw)->not->toContain('9900000001')->and($raw)->not->toContain('3000000001');
+});
