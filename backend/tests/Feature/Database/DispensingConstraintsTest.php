@@ -184,3 +184,78 @@ it('rechaza dispensar un lote de un producto distinto al prescrito', function ()
 
     expectDbRejects(fn () => DB::table('dispensation_items')->where('id', $dispensationItemId)->update(['quantity' => 0]), 'dispensation_items_quantity_positive');
 });
+
+/*
+| Huecos detectados en la revisión de QA (Fase 1, cierre).
+*/
+
+/**
+ * Crea una dispensación (cabecera) y devuelve su id.
+ *
+ * @param  array<string, mixed>  $overrides
+ */
+function insertDispensation(Prescription $prescription, array $overrides = []): int
+{
+    return DB::table('dispensations')->insertGetId(dispensationRow($prescription, $overrides));
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function dispensationItemRow(int $dispensationId, PrescriptionItem $item, int $quantity = 1): array
+{
+    return [
+        'dispensation_id' => $dispensationId,
+        'prescription_item_id' => $item->id,
+        'product_id' => $item->product_id,
+        'quantity' => $quantity,
+    ];
+}
+
+it('RN-05: una línea de medicamento controlado no puede ir en una dispensación que no exige autorización', function () {
+    $prescription = Prescription::factory()->create();
+    $controlledItem = PrescriptionItem::factory()->create([
+        'prescription_id' => $prescription->id,
+        'product_id' => Product::factory()->controlled()->create()->id,
+    ]);
+
+    // Bug simulado del servicio: marca requires_authorization = false y la deja COMPLETADA sin autorizador.
+    $dispensationId = insertDispensation($prescription, ['requires_authorization' => false, 'status' => 'COMPLETADA']);
+
+    expectDbRejects(
+        fn () => DB::table('dispensation_items')->insert(dispensationItemRow($dispensationId, $controlledItem)),
+        'RN-05',
+    );
+
+    // Con requires_authorization = true la línea sí se acepta (queda pendiente de autorizar).
+    $pendingId = insertDispensation($prescription, ['requires_authorization' => true, 'status' => 'PENDIENTE_AUTORIZACION']);
+    DB::table('dispensation_items')->insert(dispensationItemRow($pendingId, $controlledItem));
+
+    // ...y ya no se puede "apagar" la exigencia para saltarse la autorización.
+    expectDbRejects(
+        fn () => DB::table('dispensations')->where('id', $pendingId)->update(['requires_authorization' => false, 'status' => 'COMPLETADA']),
+        'RN-05',
+    );
+    expect(DB::table('dispensations')->where('id', $pendingId)->value('status'))->toBe('PENDIENTE_AUTORIZACION');
+});
+
+it('RN-04: la línea dispensada debe pertenecer a la prescripción de la dispensación', function () {
+    $prescription = Prescription::factory()->create();
+    $otherPatientsItem = PrescriptionItem::factory()->create(); // prescripción de OTRO paciente
+    $dispensationId = insertDispensation($prescription);
+
+    expectDbRejects(
+        fn () => DB::table('dispensation_items')->insert(dispensationItemRow($dispensationId, $otherPatientsItem)),
+        'no pertenece a la prescripción',
+    );
+
+    // Tampoco se puede cambiar la prescripción de la cabecera dejando líneas huérfanas.
+    $ownItem = PrescriptionItem::factory()->create(['prescription_id' => $prescription->id]);
+    DB::table('dispensation_items')->insert(dispensationItemRow($dispensationId, $ownItem));
+    $samePatientOtherPrescription = Prescription::factory()->create(['patient_id' => $prescription->patient_id]);
+
+    expectDbRejects(
+        fn () => DB::table('dispensations')->where('id', $dispensationId)->update(['prescription_id' => $samePatientOtherPrescription->id]),
+        'no pertenecen a la prescripción',
+    );
+});
