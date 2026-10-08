@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancela ejecuciones viejas de la misma rama/PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Pint, Larastan, Pest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fartmar
+          # Credencial efímera del contenedor de CI, no es un secreto.
+          POSTGRES_PASSWORD: fartmar_ci
+          POSTGRES_DB: fartmar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fartmar -d fartmar_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_USERNAME: fartmar
+      DB_PASSWORD: fartmar_ci
+      # phpunit.xml fuerza DB_DATABASE=fartmar_test
+      LLM_PROVIDER: mock
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configurar PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_pgsql, intl, pcntl, zip
+          coverage: none
+          tools: composer:v2
+          ini-values: memory_limit=1G
+
+      - name: Directorio de caché de Composer
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Caché de Composer
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-
+
+      - name: Instalar dependencias
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Preparar .env y APP_KEY de CI
+        run: |
+          cp .env.example .env
+          php artisan key:generate --no-interaction
+
+      - name: Pint (estilo)
+        run: vendor/bin/pint --test
+
+      - name: Larastan (análisis estático, nivel 6)
+        run: vendor/bin/phpstan analyse --no-progress --error-format=github
+
+      - name: Pest (PostgreSQL)
+        run: vendor/bin/pest --ci
+
+  frontend:
+    name: Frontend (ESLint, tsc, Vitest, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configurar Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript (tsc)
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm run test:run
+
+      - name: Build
+        run: npm run build
