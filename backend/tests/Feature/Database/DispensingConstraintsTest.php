@@ -259,3 +259,107 @@ it('RN-04: la línea dispensada debe pertenecer a la prescripción de la dispens
         'no pertenecen a la prescripción',
     );
 });
+
+it('RN-04 límite: quantity_dispensed == quantity_prescribed se acepta de una vez', function () {
+    $item = PrescriptionItem::factory()->create(['quantity_prescribed' => 7]);
+
+    DB::update('UPDATE prescription_items SET quantity_dispensed = 7 WHERE id = ?', [$item->id]);
+
+    expect($item->fresh()?->quantity_dispensed)->toBe(7);
+});
+
+it('prescripciones: número único, un producto por prescripción y vigencia del mismo día válida', function () {
+    $prescription = Prescription::factory()->create();
+    $item = PrescriptionItem::factory()->create(['prescription_id' => $prescription->id]);
+
+    expectDbRejects(
+        fn () => Prescription::factory()->create(['number' => $prescription->number]),
+        'prescriptions_number_unique',
+    );
+    expectDbRejects(
+        fn () => PrescriptionItem::factory()->create(['prescription_id' => $prescription->id, 'product_id' => $item->product_id]),
+        'prescription_items_prescription_id_product_id_unique',
+    );
+
+    DB::update('UPDATE prescriptions SET valid_until = issued_at::date WHERE id = ?', [$prescription->id]);
+    expect(DB::table('prescriptions')->where('id', $prescription->id)->whereColumn('valid_until', '=', DB::raw('issued_at::date'))->exists())->toBeTrue();
+});
+
+it('RN-09: rechaza una idempotency_key vacía', function () {
+    expectDbRejects(
+        fn () => insertDispensation(Prescription::factory()->create(), ['idempotency_key' => '   ']),
+        'dispensations_idempotency_key_not_blank',
+    );
+});
+
+it('RN-05: quien rechaza no puede ser quien creó y debe ser regente', function () {
+    $prescription = Prescription::factory()->create();
+    $regente = User::factory()->regente()->create();
+    $rejection = ['status' => 'RECHAZADA', 'requires_authorization' => true, 'rejected_at' => now(), 'rejection_reason' => 'Fórmula ilegible'];
+
+    expectDbRejects(fn () => insertDispensation($prescription, $rejection + [
+        'created_by' => $regente->id, 'rejected_by' => $regente->id,
+    ]), 'dispensations_rejecter_differs');
+
+    expectDbRejects(fn () => insertDispensation($prescription, $rejection + [
+        'rejected_by' => User::factory()->auxiliar()->create()->id,
+    ]), 'debe tener rol regente_farmacia');
+
+    insertDispensation($prescription, $rejection + ['rejected_by' => $regente->id]);
+    expect(DB::table('dispensations')->where('status', 'RECHAZADA')->count())->toBe(1);
+});
+
+it('RN-05: flujo de autorización por UPDATE (como lo hará el servicio)', function () {
+    $prescription = Prescription::factory()->create();
+    $creator = User::factory()->regente()->create();
+    $id = insertDispensation($prescription, [
+        'requires_authorization' => true, 'status' => 'PENDIENTE_AUTORIZACION', 'created_by' => $creator->id,
+    ]);
+
+    // Un auxiliar no puede autorizar (trigger también en UPDATE).
+    expectDbRejects(fn () => DB::table('dispensations')->where('id', $id)->update([
+        'status' => 'COMPLETADA', 'authorized_by' => User::factory()->auxiliar()->create()->id, 'authorized_at' => now(),
+    ]), 'debe tener rol regente_farmacia');
+
+    // El mismo regente que la creó tampoco.
+    expectDbRejects(fn () => DB::table('dispensations')->where('id', $id)->update([
+        'status' => 'COMPLETADA', 'authorized_by' => $creator->id, 'authorized_at' => now(),
+    ]), 'dispensations_authorizer_differs');
+
+    // Autorizador sin fecha: incompleto.
+    expectDbRejects(fn () => DB::table('dispensations')->where('id', $id)->update([
+        'status' => 'COMPLETADA', 'authorized_by' => User::factory()->regente()->create()->id,
+    ]), 'dispensations_controlled_needs_authorization');
+
+    // Un regente distinto sí.
+    DB::table('dispensations')->where('id', $id)->update([
+        'status' => 'COMPLETADA', 'authorized_by' => User::factory()->regente()->create()->id, 'authorized_at' => now(),
+    ]);
+    expect(DB::table('dispensations')->where('id', $id)->value('status'))->toBe('COMPLETADA');
+});
+
+it('líneas y lotes de dispensación: producto coherente, sin duplicados y cantidades positivas', function () {
+    $prescription = Prescription::factory()->create();
+    $item = PrescriptionItem::factory()->create(['prescription_id' => $prescription->id]);
+    $dispensationId = insertDispensation($prescription);
+
+    // product_id de la línea distinto al de la línea de prescripción.
+    expectDbRejects(fn () => DB::table('dispensation_items')->insert(
+        ['product_id' => Product::factory()->create()->id] + dispensationItemRow($dispensationId, $item),
+    ), 'dispensation_items_prescription_item_id_product_id_foreign');
+
+    $dispensationItemId = DB::table('dispensation_items')->insertGetId(dispensationItemRow($dispensationId, $item, 2));
+
+    expectDbRejects(
+        fn () => DB::table('dispensation_items')->insert(dispensationItemRow($dispensationId, $item)),
+        'dispensation_items_dispensation_id_prescription_item_id_unique',
+    );
+
+    $lot = Lot::factory()->create(['product_id' => $item->product_id]);
+    $lotRow = ['dispensation_item_id' => $dispensationItemId, 'lot_id' => $lot->id, 'product_id' => $item->product_id];
+
+    expectDbRejects(fn () => DB::table('dispensation_item_lots')->insert($lotRow + ['quantity' => 0]), 'dispensation_item_lots_quantity_positive');
+
+    DB::table('dispensation_item_lots')->insert($lotRow + ['quantity' => 2]);
+    expectDbRejects(fn () => DB::table('dispensation_item_lots')->insert($lotRow + ['quantity' => 1]), 'dispensation_item_lots_dispensation_item_id_lot_id_unique');
+});
