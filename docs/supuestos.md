@@ -76,3 +76,9 @@ Decisiones tomadas ante ambigüedades del enunciado (sección 8: "toma una decis
 | S-43 | Los ids de ruta aceptan de 1 a 18 dígitos sin ceros a la izquierda; lo demás responde 404. Lo mismo para el id del token Bearer (`id|secreto`), que responde 401. | Un id fuera del rango de `bigint` llegaba a PostgreSQL y respondía 500 (con `APP_DEBUG=true`, con el SQL y el host en el cuerpo). |
 | S-44 | Con `APP_DEBUG=false`, cualquier error inesperado en `/api/*` responde `500 ERROR_INTERNO` sin detalles; con `APP_DEBUG=true` (solo desarrollo) se deja el detalle de Laravel. | No filtrar SQL, rutas ni datos de conexión en producción sin perder la depuración en local. |
 | S-45 | CORS: solo los orígenes de `CORS_ALLOWED_ORIGINS` (por defecto `http://localhost:5173`), sin credenciales, con los headers que usa la API (`Authorization`, `Idempotency-Key`, `X-Correlation-Id`) y exponiendo `Idempotent-Replayed` y `Retry-After`. | El valor por defecto de Laravel permite cualquier origen (`*`). |
+
+## Revisión de la Fase 2 (dominio)
+
+| # | Supuesto | Motivo |
+|---|---|---|
+| S-47 | Todo `/api/v1` autenticado tiene un límite de **120 solicitudes por minuto por usuario** (`API_RATE_LIMIT_PER_MINUTE`); al superarlo, 429 `DEMASIADAS_SOLICITUDES` con `Retry-After`. Se cuenta por usuario (el middleware corre después de `auth:sanctum`), no por IP, porque en una IPS varios equipos pueden salir por la misma IP. | Frenar scripts o clientes en bucle (incluido el reintento automático de dispensaciones) sin afectar el uso normal de un auxiliar, que no supera unas pocas solicitudes por minuto. |

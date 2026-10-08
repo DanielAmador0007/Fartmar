@@ -9,6 +9,7 @@
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
+use Laravel\Sanctum\Sanctum;
 
 // CACHE_STORE=array (phpunit.xml): los contadores del limitador empiezan en
 // cero en cada prueba.
@@ -105,6 +106,26 @@ it('login: 20 intentos por minuto por IP aunque cambie el correo', function () {
 
     $this->postJson('/api/v1/auth/login', ['email' => 'barrido21@fartmar.test', 'password' => 'x'])
         ->assertStatus(429);
+});
+
+it('API autenticada: límite por usuario (por defecto 120/min) y luego 429 uniforme', function () {
+    expect(config('fartmar.api_rate_limit_per_minute'))->toBe(120);
+    config(['fartmar.api_rate_limit_per_minute' => 3]);
+    $user = User::factory()->auxiliar()->create();
+    Sanctum::actingAs($user);
+
+    foreach (range(1, 3) as $_) {
+        $this->getJson('/api/v1/auth/me')->assertOk();
+    }
+
+    $this->getJson('/api/v1/auth/me')
+        ->assertStatus(429)
+        ->assertJsonPath('error.code', 'DEMASIADAS_SOLICITUDES')
+        ->assertHeader('Retry-After');
+
+    // Otro usuario no se ve afectado (el límite es por usuario, no global).
+    Sanctum::actingAs(User::factory()->auxiliar()->create());
+    $this->getJson('/api/v1/auth/me')->assertOk();
 });
 
 it('login no revela si el correo existe ni si el usuario está inactivo', function () {

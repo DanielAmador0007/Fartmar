@@ -9,6 +9,7 @@ info:
     - Todos los errores usan el mismo formato `{ "error": { "code", "message", "details" } }`.
     - Fechas de vencimiento en `YYYY-MM-DD`; "hoy" se calcula en `America/Bogota` (S-13). Un lote que vence hoy aún se puede dispensar (S-14).
     - Ningún endpoint de dispensación expone nombre ni documento del paciente: solo `patient_id`.
+    - Límite de solicitudes: todos los endpoints autenticados admiten `API_RATE_LIMIT_PER_MINUTE` (120 por defecto) solicitudes por minuto por usuario; al superarlo responden 429 `DEMASIADAS_SOLICITUDES` con `Retry-After` (S-47).
 servers:
   - url: http://localhost:8080/api/v1
     description: Desarrollo local (docker compose)

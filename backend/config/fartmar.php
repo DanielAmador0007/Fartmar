@@ -17,4 +17,8 @@ return [
     // hashes existentes (habría que recalcularlos).
     'patient_hash_key' => env('PATIENT_HASH_KEY'),
 
+    // Límite de solicitudes por minuto por usuario autenticado en /api/v1
+    // (S-47). Frena scripts o clientes en bucle sin afectar el uso normal.
+    'api_rate_limit_per_minute' => (int) env('API_RATE_LIMIT_PER_MINUTE', 120),
+
 ];

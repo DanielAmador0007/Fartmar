@@ -20,7 +20,8 @@ Route::prefix('v1')->group(function (): void {
         ->middleware('throttle:login')
         ->name('auth.login');
 
-    Route::middleware('auth:sanctum')->group(function (): void {
+    // auth:sanctum primero para que el límite "api" cuente por usuario.
+    Route::middleware(['auth:sanctum', 'throttle:api'])->group(function (): void {
         Route::post('auth/logout', [AuthController::class, 'logout'])->name('auth.logout');
         Route::get('auth/me', [AuthController::class, 'me'])->name('auth.me');
 
