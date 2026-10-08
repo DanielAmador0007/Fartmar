@@ -180,3 +180,31 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - `APP_DEBUG=true` es el valor por defecto en compose; si alguien despliega así, los 500 vuelven a mostrar detalles. Se corrige en la imagen de producción (Fase 7).
   - El limitador de login usa la caché por defecto; con varias réplicas debe ser una caché compartida (Redis/BD), no `array`/`file`.
   - Detrás de un proxy (Nginx), `$request->ip()` será la del proxy si no se configuran `TrustProxies`: todo el tráfico compartiría el límite por IP (Fase 7).
+
+### 2026-10-08 — Correcciones de la revisión de Fase 2 (dominio)
+- Agente: backend-dominio (Claude Code)
+- Qué generó la IA:
+  - **M1** `app/Database/PostgresError.php` (lee SQLSTATE de `errorInfo[0]` y el nombre del constraint de la primera línea de `errorInfo[2]`) y `ApiErrorRenderer::databaseError`: CHECK `stocks_quantity_non_negative` → 409 `STOCK_INSUFICIENTE`; CHECK `prescription_items_dispensed_le_prescribed` → 422 `PRESCRIPCION_EXCEDIDA`; 40P01/40001 (tras los 3 intentos de `DB::transaction`) → 409 `CONFLICTO_CONCURRENCIA`. Aplica con o sin `APP_DEBUG`. Pruebas en `tests/Feature/Api/DatabaseErrorMappingTest.php`.
+  - **B2** `DispenseService::executeOutflow`: `increment('quantity_dispensed', n)` en vez de `+=` y `save()`.
+  - **B3** `IdempotencyGuard::isKeyCollision` usa `PostgresError` (23505 + `dispensations_idempotency_key_unique`), prueba con una violación real.
+  - **B4** `Idempotency-Key`: 8–100 caracteres `[A-Za-z0-9_-]` y mensaje que lo dice; S-29 y openapi actualizados.
+  - **B6** limitador `api` (120/min por usuario, `API_RATE_LIMIT_PER_MINUTE`) en el grupo `auth:sanctum`; S-47.
+  - **B1** supuesto S-46 (semántica del replay) y prueba que lo fija.
+  - **M2** modo `authorize` en `tests/Concurrency/bin/dispense-worker.php` y 4 pruebas de concurrencia real nuevas.
+- Qué decisión tomó y por qué:
+  - **M2 encontró un bug real:** 8 procesos pidiendo 1 sobre la MISMA prescripción daban OK=1 y 7 deadlocks (40P01). Flujo explicado simple: cada proceso (1) insertaba su dispensación, y ese INSERT, por la llave foránea, "marca" la prescripción en modo compartido (`FOR KEY SHARE`) para que nadie la borre; (2) luego pedía la prescripción en modo exclusivo (`FOR UPDATE`) para validar el saldo. El exclusivo espera a que los demás suelten su marca compartida, y los demás esperan lo mismo de él: nadie avanza. PostgreSQL mata a uno, Laravel reintenta 3 veces y al final falla. Las pruebas anteriores usaban una prescripción distinta por proceso y no lo veían.
+  - **Corrección:** al crear, primero se bloquea la prescripción (la fila de espera es una sola) y después se inserta la dispensación. Al cambiar el orden apareció un segundo caso: dos reintentos con la misma clave pidiendo TODO el saldo; el segundo, al obtener el bloqueo, veía el saldo en 0 y respondía error en vez del replay. Por eso se vuelve a buscar la `Idempotency-Key` justo después de tomar el bloqueo. Hay prueba de concurrencia para cada caso y se comprobó que ambas fallan sin la corrección.
+  - El revisor esperaba `PRESCRIPCION_EXCEDIDA=3` con una prescripción de una línea, pero al llegar a 5/5 la prescripción pasa a `COMPLETADA` (S-33) y los demás reciben `PRESCRIPCION_NO_VIGENTE` (S-39). Se dejaron dos pruebas: con una segunda línea pendiente (la prescripción sigue ACTIVA → `EXCEDIDA=3`) y con una sola línea (`NO_VIGENTE=3`).
+  - El constraint se lee de `errorInfo[2]` y no de `getMessage()`, porque este último incluye el SQL y los valores; una prueba pone el nombre de otro constraint en un comentario SQL y verifica que no confunde.
+  - B2: con `+=` y `save()` se escribe el valor calculado en PHP; si algo se saltara el bloqueo se perderían entregas sin que el CHECK lo note (la prueba lo demuestra: sin el cambio responde 201 y borra 5 unidades entregadas).
+  - B4: se mantuvo el formato flexible (no solo UUID) para no romper clientes, pero sin `:` ni `.`.
+- Puntos que Daniel debe revisar/entender:
+  - Que un INSERT con FK bloquea (en modo compartido) la fila referenciada, y por qué eso + `FOR UPDATE` posterior sobre la misma fila produce deadlock. El nuevo orden está en el docblock de `DispenseService`.
+  - Que autorizar bloquea primero la dispensación y luego la prescripción; no choca con "crear" porque crear nunca bloquea una dispensación existente.
+  - La doble revisión de idempotencia en `createInTransaction` (paso 1 rápido sin bloqueo, paso 4 con bloqueo) y el `catch` del UNIQUE en `create()` (misma clave con otra prescripción).
+  - S-46: el replay devuelve el estado ACTUAL, no el cuerpo original.
+- Riesgos o cosas que podrían estar mal:
+  - `PostgresError::constraint` depende de que `lc_messages` esté en inglés (por defecto en `postgres:16-alpine`); con otro idioma, el CHECK vuelve a ser 500 (nunca un código de negocio equivocado).
+  - El bloqueo de la prescripción serializa TODAS las dispensaciones de una misma prescripción (correcto y barato: son pocas por paciente), pero también las de reintentos con la misma clave.
+  - El límite de 120/min usa la caché por defecto; con varias réplicas debe ser compartida.
+
