@@ -27,7 +27,11 @@ paths:
       tags: [Autenticación]
       summary: Iniciar sesión y obtener un token
       security: []
-      description: Limitado a 10 intentos por minuto. Usuarios inactivos no pueden iniciar sesión.
+      description: >-
+        Limitado a 5 intentos por minuto por correo + IP y 20 por minuto por IP.
+        Usuarios inactivos no pueden iniciar sesión (mismo error que clave incorrecta).
+        El token vence a los `SANCTUM_EXPIRATION` minutos (480 por defecto); un usuario
+        desactivado deja de autenticar aunque su token no haya vencido.
       requestBody:
         required: true
         content:
@@ -49,6 +53,7 @@ paths:
                 properties:
                   token: { type: string }
                   token_type: { type: string, example: Bearer }
+                  expires_at: { type: string, format: date-time, nullable: true, description: 'null si la expiración está desactivada (SANCTUM_EXPIRATION=0)' }
                   user: { $ref: '#/components/schemas/User' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '422': { $ref: '#/components/responses/ValidationError' }

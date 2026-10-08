@@ -5,6 +5,7 @@ namespace App\Domain\Auth;
 use App\Domain\Audit\AuditLogger;
 use App\Domain\Exceptions\InvalidCredentialsException;
 use App\Models\User;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
@@ -18,7 +19,7 @@ final class LoginService
     public function __construct(private readonly AuditLogger $audit) {}
 
     /**
-     * @return array{user: User, token: string}
+     * @return array{user: User, token: string, expires_at: CarbonInterface|null}
      */
     public function login(string $email, string $password, string $deviceName): array
     {
@@ -32,10 +33,15 @@ final class LoginService
             throw InvalidCredentialsException::make();
         }
 
-        $token = $user->createToken($deviceName)->plainTextToken;
+        // El Guard de Sanctum ya rechaza tokens más viejos que sanctum.expiration;
+        // guardar expires_at además permite informarlo al cliente y purgarlos.
+        $minutes = (int) config('sanctum.expiration');
+        $expiresAt = $minutes > 0 ? now()->addMinutes($minutes) : null;
+
+        $token = $user->createToken($deviceName, ['*'], $expiresAt)->plainTextToken;
         $this->audit->record($user, 'auth.login');
 
-        return ['user' => $user, 'token' => $token];
+        return ['user' => $user, 'token' => $token, 'expires_at' => $expiresAt];
     }
 
     private static function dummyHash(): string
