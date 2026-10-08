@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Enums\Role;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
@@ -18,8 +19,6 @@ class UserFactory extends Factory
     protected static ?string $password;
 
     /**
-     * Define the model's default state.
-     *
      * @return array<string, mixed>
      */
     public function definition(): array
@@ -29,8 +28,40 @@ class UserFactory extends Factory
             'email' => fake()->unique()->safeEmail(),
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
+            'role' => Role::AuxiliarFarmacia,
+            'is_active' => true,
             'remember_token' => Str::random(10),
         ];
+    }
+
+    public function role(Role $role): static
+    {
+        return $this->state(fn () => ['role' => $role]);
+    }
+
+    public function auxiliar(): static
+    {
+        return $this->role(Role::AuxiliarFarmacia);
+    }
+
+    public function regente(): static
+    {
+        return $this->role(Role::RegenteFarmacia);
+    }
+
+    public function medico(): static
+    {
+        return $this->role(Role::Medico);
+    }
+
+    public function auditor(): static
+    {
+        return $this->role(Role::Auditor);
+    }
+
+    public function admin(): static
+    {
+        return $this->role(Role::Admin);
     }
 
     /**
