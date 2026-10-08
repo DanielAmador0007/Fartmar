@@ -28,3 +28,31 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - `make` no está instalado en el host Windows: el `Makefile` solo se validó con `make -n` en un contenedor; en Windows se usa `make.ps1`, que sí se probó.
   - `make eval` llama a `assistant:eval`, que aún no existe (Fase IA).
   - El primer `docker compose up` desde cero tarda ~2 min por `composer install` sobre el bind mount de Windows.
+
+### 2026-10-08 — Fase 1: modelo de datos, modelos, seeders y pruebas de constraints
+- Agente: arquitecto-datos (Claude Code)
+- Qué generó la IA:
+  - 9 migraciones (`backend/database/migrations/2026_10_08_2100*` a `2108*`): rol en `users`, catálogo (`warehouses`, `products`, `lots`), `stocks` y `stock_minimums`, funciones PL/pgSQL compartidas, `kardex_movements`, `patients` + `prescriptions` + `prescription_items`, `patient_access_logs` + `audit_logs`, dispensaciones (3 tablas) y traslados (4 tablas).
+  - 19 modelos Eloquent con relaciones tipadas, `$fillable` explícito y casts; enums `Role`, `KardexType`, `DispensationStatus`, `TransferStatus`, `DiscrepancyStatus`, `PrescriptionStatus`; `App\Domain\Patients\DocumentHasher` (HMAC); `config/fartmar.php`; morph map.
+  - Factories, 4 seeders idempotentes y 47 pruebas Pest (42 nuevas en `tests/Feature/Database`) que intentan violar cada constraint por SQL directo. `docs/modelo-datos.md` con diagrama ER.
+- Qué decisión tomó y por qué (resumen para la sustentación):
+  - **Stock nunca negativo:** `CHECK (quantity >= 0)` en `stocks`. Aunque el servicio falle o dos transacciones compitan, PostgreSQL rechaza el UPDATE que deja saldo negativo. Es la última línea de defensa de RN-03 (la primera es `FOR UPDATE`, Fase 2).
+  - **Kardex inmutable:** trigger `BEFORE UPDATE OR DELETE` que lanza excepción (RN-06), con `quantity > 0`, `direction ∈ {-1, 1}` coherente con el tipo (las entradas no restan, las salidas no suman), `balance_after >= 0` y motivo obligatorio para `AJUSTE`. Un movimiento solo puede referirse a una existencia real: FK `(warehouse_id, lot_id) → stocks`.
+  - **No dispensar más de lo prescrito:** `CHECK (quantity_dispensed <= quantity_prescribed)` en `prescription_items`; las parciales acumuladas se suman sobre esa columna (RN-04).
+  - **Segregación de funciones:** `CHECK (approved_by <> requested_by)` en traslados (RN-08) y `CHECK (authorized_by <> created_by)` en dispensaciones (RN-05); además un trigger exige que quien aprueba/autoriza tenga rol `regente_farmacia`, y un controlado no puede quedar `COMPLETADA` sin autorizador.
+  - **Idempotencia:** `idempotency_key` UNIQUE + `request_hash` (RN-09): dos reintentos simultáneos no pueden crear dos dispensaciones; el segundo choca con el UNIQUE.
+  - **FK compuestas `(lot_id, product_id) → lots(id, product_id)`:** el `product_id` denormalizado en stocks/kardex/dispensaciones/traslados siempre coincide con el lote; imposible dispensar un lote de otro producto. `(prescription_id, patient_id)` impide usar la prescripción de otro paciente.
+  - **Traslados:** CHECK de los 7 estados, origen ≠ destino, cada estado exige sus actores (p. ej. `EN_TRANSITO` ⇒ `dispatched_by`) y `ANULADO` solo sin `dispatched_at` (RN-07). `0 <= quantity_received <= quantity_dispatched`.
+  - **Privacidad:** documento cifrado + HMAC para búsqueda; bitácoras append-only con el mismo trigger del kardex.
+  - Los CHECK se escribieron como implicaciones (`estado NOT IN (...) OR condición`): con la primera versión, un estado inválido violaba varios constraints a la vez y el error reportado era confuso; se detectó con las pruebas.
+  - Desviaciones respecto al plan inicial: `transfer_items` sin `lot_id` (los lotes van en `transfer_item_lots`, multi-lote FEFO) y la dispensación en tres niveles para poder dejar un controlado pendiente sin lotes (supuestos S-19, S-20).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué `stocks.product_id` está denormalizado y cómo la FK compuesta lo protege (S-16).
+  - Que la BD **no** valida FEFO, vencimiento ni transiciones del traslado: eso es de `app/Domain` (Fase 2). Ver la sección "Lo que la BD NO garantiza" de `docs/modelo-datos.md`.
+  - `Patient::booted()` recalcula `document_hash` al guardar si cambia el documento: es el único "hook" de modelo.
+  - Helper `expectDbRejects()` en `tests/Pest.php`: usa `DB::transaction` (SAVEPOINT) para poder probar varias violaciones en una misma prueba con `RefreshDatabase`.
+- Riesgos o cosas que podrían estar mal:
+  - Los triggers append-only no bloquean `TRUNCATE`; en producción el usuario de la app no debería ser dueño de las tablas (S-23).
+  - Si se rota `APP_KEY`/`PATIENT_HASH_KEY` se pierden los documentos cifrados y los hashes; no hay rutina de re-cifrado.
+  - El seeder escribe stock y kardex directamente (aún no existe `KardexService`); en Fase 2 conviene que use el servicio.
+  - `balance_after` coherente con el saldo depende del servicio (bloqueo + misma transacción); no hay constraint que lo garantice entre filas.
