@@ -1,7 +1,10 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-08, revisión de seguridad de la Fase 2 (seguridad-privacidad).
+> Última actualización: 2026-10-08, al cerrar la Fase 2.
+>
+> Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
+> siguiente fase desde `main` actualizado (`git checkout main; git pull`).
 
 ## Cómo retomar en un chat nuevo
 
@@ -20,8 +23,8 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 |---|---|---|
 | 0 Andamiaje | ✅ Hecha | Laravel 13.35 / PHP 8.4, Vite 8 + React 19, compose `fartmar`, CI, `/health` `/ready` |
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
-| 2 Dispensación (FEFO, concurrencia, idempotencia) | ⏭️ **Siguiente** | backend-dominio → qa-tester → seguridad-privacidad |
-| 3 Traslados, ajustes, alertas | Pendiente | |
+| 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR `feat/fase-2-dispensacion`) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
+| 3 Traslados, ajustes, alertas | ⏭️ **Siguiente** | backend-dominio → qa-tester; reutilizar `StockService` (ya admite salida/entrada de traslado y `AJUSTE`) y `ConcurrentDispenser` |
 | 4 Seguridad y privacidad | Pendiente | |
 | 5 Frontend | Pendiente | |
 | 6 Asistente IA | Pendiente | |
@@ -46,7 +49,19 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
 
-## Lo que la Fase 2 debe saber del esquema
+## Lo que la Fase 3 debe saber de la Fase 2
+
+- `StockService` es el **único** punto que escribe `stocks` (UPDATE relativo + `RETURNING` para `balance_after`);
+  exige transacción abierta y bloquea con `FOR UPDATE OF stocks` ordenado por `(product_id, expires_at, lot_id)`.
+- Orden de bloqueo global: cabecera de negocio (prescripción/traslado) → líneas por id → existencias por producto.
+  En dispensación se bloquea la prescripción **antes** de insertar la dispensación (evita deadlock por la FK).
+- Errores de BD mapeados en `ApiErrorRenderer` vía `App\Database\PostgresError` (CHECK, deadlock, serialización).
+- Pruebas de concurrencia: `tests/Concurrency` (worker en procesos reales + barrera con advisory lock); grupo
+  Pest `concurrency`, `.\make.ps1 test-concurrency`.
+- Pendiente menor de la revisión: `sanctum:prune-expired` está programado pero no hay scheduler en compose (Fase 7);
+  `correlation_id`/`ip` en `null` hasta el middleware de la Fase 4.
+
+## Lo que la Fase 2 debía saber del esquema
 
 - Dispensación en 3 niveles: `dispensations` → `dispensation_items` (por línea de prescripción) →
   `dispensation_item_lots` (lotes asignados por FEFO). Un controlado se crea `PENDIENTE_AUTORIZACION`
@@ -63,8 +78,7 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   por lote despachado.
 - La BD no valida: FEFO, vencimiento, vigencia de prescripción, transiciones de estado (valida la fila
   final, no el paso). Todo eso va en `app/Domain` con pruebas.
-- Los seeders escriben stock y kardex directamente (aún no existe `KardexService`); al crearlo, conviene
-  que el seeder lo use.
+- El seeder de inventario ya usa `StockService` (hecho en la Fase 2).
 
 ## Riesgos conocidos / deuda abierta
 
