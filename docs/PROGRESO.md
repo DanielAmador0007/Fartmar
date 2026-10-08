@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-08, al cerrar la Fase 1.
+> Última actualización: 2026-10-08, revisión de seguridad de la Fase 2 (seguridad-privacidad).
 
 ## Cómo retomar en un chat nuevo
 
@@ -74,6 +74,31 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - La BD no exige que quien resuelve una discrepancia sea regente ni que autorizadores estén activos
   (`is_active`): cubrir en Policies (Fase 3/4) o con trigger.
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
+
+### Pendientes de seguridad detectados en la revisión de la Fase 2 (para Fase 4 / 7)
+
+- **[Alto · Fase 4] PII y secretos en logs de excepciones:** `QueryException` incluye el SQL **con los valores**
+  (se vio en pruebas: un INSERT de `users` con correo y hash de contraseña). Laravel lo registra al reportar un 500.
+  Falta el procesador Monolog que redacte claves sensibles y los valores de SQL, y logs JSON a stdout
+  (hoy `LOG_CHANNEL=stderr` en texto plano).
+- **[Alto · Fase 7] `APP_DEBUG=true` por defecto** en `docker-compose.yml` y `.env.example` (correcto para demo
+  local). La imagen/compose de producción debe forzar `APP_ENV=production` y `APP_DEBUG=false`; con debug activo
+  cualquier 500 no capturado expone SQL y host. El renderizador ya responde `ERROR_INTERNO` si debug está apagado (S-44).
+- **[Medio · Fase 4] Middleware `X-Correlation-Id`:** `correlation_id` de dispensaciones, kardex y `audit_logs`
+  sigue en `null`; `audit_logs.ip` también (nadie llena `Context::get('ip')`).
+- **[Medio · Fase 4] Intentos de login fallidos no se auditan** (solo los exitosos y el logout). Agregar
+  `auth.login_failed` en `audit_logs` sin el correo en claro (p. ej. HMAC del correo) para detectar fuerza bruta.
+- **[Medio · Fase 4] `patient_access_logs`, endpoint de pacientes y enmascarado para auditor (`PatientMasker`):**
+  aún no existen. Hoy ningún Resource expone datos del paciente (solo `patient_id`), verificado en pruebas.
+- **[Medio · Fase 4] Al desactivar un usuario (CRUD de admin), revocar sus tokens** además de la verificación de
+  `is_active` en cada petición (S-41). Prueba de matriz `AuthorizationMatrixTest` debe ampliarse con cada endpoint nuevo.
+- **[Bajo] Enumeración de ids por rol sin permiso:** un médico recibe 404 por una dispensación inexistente y 403 por
+  una existente (el binding resuelve antes de la Policy). Solo revela que el id existe, sin datos.
+- **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
+- **[Bajo · Fase 7] Headers de seguridad** (CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`) en Nginx; hoy la
+  API corre con el servidor embebido de PHP.
+- **[Bajo] Primer login de cada worker** tarda más (se genera el hash ficticio para igualar tiempos); diferencia
+  medible solo en la primera petición del proceso.
 - Restos de Docker de la Fase 0 que Daniel puede borrar a mano si quiere:
   `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`.
 

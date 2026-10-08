@@ -145,3 +145,38 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - El modo `unsafe` depende de que `Builder::lock()` pase por `compileLock()` de la gramática de PostgreSQL; si Laravel cambia eso, la prueba de control podría dejar de quitar los bloqueos (fallaría en la aserción de `CHECK_VIOLATION`, no pasaría en silencio).
   - `DatabaseTruncation` + `afterEach` truncan todas las tablas de `fartmar_test`; si alguien agrega datos fijos de referencia por migración, habría que excluirlos.
   - El replay de idempotencia devuelve la dispensación en su **estado actual** (p. ej. una pendiente que ya se autorizó vuelve como COMPLETADA), no una copia literal de la primera respuesta. Es razonable, pero conviene mencionarlo.
+
+### 2026-10-08 — Fase 2: revisión de seguridad de autenticación, dispensación e inventario
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - Revisión de `/api/v1` (auth, dispensations, stocks): Policies, Resources, login, usuarios inactivos, IDOR, errores, validación, logs y tokens. Hallazgos verificados con pruebas exploratorias antes de corregir.
+  - `app/Models/PersonalAccessToken.php`: rechaza tokens `id|secreto` con id que no cabe en `bigint`.
+  - `AppServiceProvider`: `Sanctum::authenticateAccessTokensUsing` (usuario inactivo = token inválido) y limitador `login` (5/min por correo + IP, 20/min por IP).
+  - `config/sanctum.php`: `expiration` = `SANCTUM_EXPIRATION` (480 min) y `guard = []` (solo Bearer). `LoginService` guarda `expires_at` en el token y el login lo devuelve. `sanctum:prune-expired` diario en `routes/console.php`.
+  - `routes/api.php`: patrón de id `[1-9][0-9]{0,17}` en vez de `whereNumber`.
+  - `ApiErrorRenderer`: `500 ERROR_INTERNO` sin detalles cuando `APP_DEBUG=false`; el 429 conserva `Retry-After`.
+  - `StoreDispensationRequest`: `items` debe ser lista y cada línea exactamente `{prescription_item_id, quantity}`; ids `min:1`. `IndexStockRequest`: ids `min:1`.
+  - `config/cors.php`: solo `CORS_ALLOWED_ORIGINS` (antes `*`).
+  - Pruebas: `tests/Feature/Security/{AuthHardeningTest,ApiHardeningTest,AuthorizationMatrixTest}.php` (matriz rol × endpoint con dataset cartesiano de Pest: 5 roles × 7 endpoints) y `tests/Unit/ArchitectureTest.php` (controladores sin `Role`, sin `dd`/`dump`). Supuestos S-36 (actualizado) y S-40…S-45. Pendientes en `docs/PROGRESO.md`.
+- Qué decisión tomó y por qué:
+  - **Hallazgos y severidad:**
+    - Alto (corregido): un token de un usuario desactivado seguía autenticando (`/auth/me` 200); las Policies frenaban la operación, pero no la autenticación.
+    - Alto (corregido): tokens sin expiración.
+    - Medio (corregido): `GET /dispensations/99999999999999999999` y el token `99999999999999999999|x` daban 500 con el SQL, host y BD en el cuerpo (con `APP_DEBUG=true`). El del token pasaba **antes** de autenticar.
+    - Medio (corregido): 500 no uniforme y dependiente solo de `APP_DEBUG`; CORS `*` por defecto; login limitado solo por IP; el 429 perdía `Retry-After` (el renderizador creaba una respuesta nueva sin los headers).
+    - Bajo (corregido): `items` aceptaba objetos y claves extra.
+    - Sin hallazgos: no hay `if` de rol en controladores (todo pasa por Policies/Form Requests), ningún Resource expone nombre/documento del paciente, el login responde idéntico para correo inexistente, clave mala o usuario inactivo, el SQL crudo (`applyDelta`, `selectRaw`) usa bindings, no hay `dd`/`dump` ni secretos en el código, `Idempotency-Key` ya validaba formato y longitud.
+  - El usuario inactivo se corta en el Guard de Sanctum (un solo lugar) y no con un middleware extra: así ninguna ruta nueva puede olvidarlo.
+  - La expiración se cuenta desde el login (no deslizante) porque Sanctum no renueva tokens; 480 min = un turno.
+  - Solo Bearer (S-40): elimina CSRF y simplifica; el riesgo de XSS se mitiga con expiración y CSP (Fase 7).
+  - `ERROR_INTERNO` solo con debug apagado, para no perder el detalle en desarrollo.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué un id enorme producía 500: `whereNumber` acepta cualquier cantidad de dígitos y PostgreSQL rechaza el valor al convertirlo a `bigint`. Lo mismo en `PersonalAccessToken::findToken` de Sanctum.
+  - La diferencia entre **autenticación** (Guard de Sanctum: ¿quién es y está activo?) y **autorización** (Policies: ¿su rol puede hacer esto?). Antes, el inactivo solo se frenaba en la segunda.
+  - Cómo leer `AuthorizationMatrixTest`: permitido = cualquier código distinto de 401/403 (el resultado de negocio se prueba en otros archivos). Hay que agregar cada endpoint nuevo ahí.
+  - Que con un único origen CORS el paquete siempre responde ese origen (no `null`); el navegador bloquea porque no coincide.
+- Riesgos o cosas que podrían estar mal:
+  - **Las excepciones de BD se registran con el SQL y sus valores** (se vio un INSERT de `users` con correo y hash): la redacción Monolog de la Fase 4 es necesaria antes de exponer pacientes por API.
+  - `APP_DEBUG=true` es el valor por defecto en compose; si alguien despliega así, los 500 vuelven a mostrar detalles. Se corrige en la imagen de producción (Fase 7).
+  - El limitador de login usa la caché por defecto; con varias réplicas debe ser una caché compartida (Redis/BD), no `array`/`file`.
+  - Detrás de un proxy (Nginx), `$request->ip()` será la del proxy si no se configuran `TrustProxies`: todo el tráfico compartiría el límite por IP (Fase 7).
