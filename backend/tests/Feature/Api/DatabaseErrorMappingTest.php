@@ -69,6 +69,34 @@ it('CHECK stocks_quantity_non_negative por el endpoint real responde 409 STOCK_I
         ->and($s->totalStock())->toBe(10);
 });
 
+it('lo dispensado se suma en la BD (UPDATE relativo): si la línea cambió sin bloqueo, el CHECK frena el exceso', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5);
+    Sanctum::actingAs($s->auxiliar);
+
+    // Simula un camino sin bloqueo: después de que el servicio lee y valida
+    // la línea (quantity_dispensed = 0 en memoria), otra entrega deja la
+    // línea completa (5 de 5). Con "quantity_dispensed = 0 + 1" escrito desde
+    // PHP se perderían esas 5 unidades en silencio; con el UPDATE relativo la
+    // BD calcula 6 > 5 y el CHECK lo rechaza.
+    $done = false;
+    DB::listen(function (QueryExecuted $q) use (&$done): void {
+        if (! $done && str_starts_with($q->sql, 'select * from "prescription_items"') && str_contains($q->sql, 'for update')) {
+            $done = true;
+            DB::update('update prescription_items set quantity_dispensed = quantity_prescribed');
+        }
+    });
+
+    $this->postJson('/api/v1/dispensations', $s->payload(1), ['Idempotency-Key' => (string) Str::uuid()])
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'PRESCRIPCION_EXCEDIDA');
+
+    expect($done)->toBeTrue()
+        ->and(Dispensation::query()->count())->toBe(0)
+        ->and(KardexMovement::query()->count())->toBe(0)
+        ->and($s->totalStock())->toBe(10)
+        ->and($s->item->fresh()?->quantity_dispensed)->toBe(0);
+});
+
 it('CHECK prescription_items_dispensed_le_prescribed responde 422 PRESCRIPCION_EXCEDIDA', function () {
     $s = DispensingScenario::make(prescribed: 5);
     Route::middleware('api')->post('/api/v1/_prueba/excede', fn () => DB::transaction(

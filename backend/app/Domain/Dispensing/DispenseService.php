@@ -319,9 +319,13 @@ final class DispenseService
                 $this->dispenseLot($dispensation, $item, $allocation, $actor);
             }
 
+            // UPDATE relativo (quantity_dispensed = quantity_dispensed + n),
+            // igual que StockService::applyDelta: si algún camino llegara sin
+            // el FOR UPDATE de la línea, PostgreSQL suma sobre el valor
+            // confirmado y el CHECK (dispensed <= prescribed) rechaza el
+            // exceso, en vez de sobrescribir en silencio lo que otro entregó.
             $line = $linesById->get($item->prescription_item_id) ?? throw new LogicException('Línea de prescripción no bloqueada.');
-            $line->quantity_dispensed += $item->quantity;
-            $line->save();
+            $line->increment('quantity_dispensed', $item->quantity);
         }
 
         $this->completePrescriptionIfFullyDispensed($dispensation->prescription_id);
