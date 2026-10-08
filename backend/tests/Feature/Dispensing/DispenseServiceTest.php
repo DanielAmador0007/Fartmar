@@ -4,6 +4,7 @@
 | DispenseService (RN-01..RN-06, RN-09) probado directamente, sin HTTP.
 */
 
+use App\Database\PostgresError;
 use App\Domain\Dispensing\DispenseData;
 use App\Domain\Dispensing\DispenseItemData;
 use App\Domain\Dispensing\DispenseService;
@@ -25,7 +26,9 @@ use App\Models\PrescriptionItem;
 use App\Models\Product;
 use App\Models\User;
 use App\Models\Warehouse;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Tests\Support\DispensingScenario;
 
@@ -222,6 +225,37 @@ it('RN-09: carrera por la misma clave — el UNIQUE choca y se devuelve la dispe
         ->and($s->totalStock())->toBe(17)
         ->and(KardexMovement::query()->count())->toBe(1)
         ->and($s->item->fresh()?->quantity_dispensed)->toBe(3);
+});
+
+it('RN-09: la colisión de clave se reconoce por SQLSTATE 23505 y el constraint dispensations_idempotency_key_unique', function () {
+    $s = DispensingScenario::make([[30, 20]], prescribed: 10);
+    $original = $this->service->create($s->auxiliar, $s->data(1), newKey())->dispensation;
+    $guard = app(IdempotencyGuard::class);
+
+    $catch = function (Closure $insert): UniqueConstraintViolationException {
+        try {
+            DB::transaction($insert);
+        } catch (UniqueConstraintViolationException $e) {
+            return $e;
+        }
+        test()->fail('La BD aceptó un valor duplicado.');
+    };
+
+    // Misma clave: el nombre del constraint queda fijado (si una migración lo
+    // renombra, esta prueba falla antes que la idempotencia en producción).
+    $sameKey = $catch(fn () => $original->replicate()->save());
+    // Otro UNIQUE (correo de usuario) cuyo SQL menciona el nombre del de la clave.
+    $other = $catch(fn () => DB::insert(
+        'insert into users (name, email, password, created_at, updated_at) values (?, ?, ?, now(), now()) /* dispensations_idempotency_key_unique */',
+        ['x', $s->auxiliar->email, 'x'],
+    ));
+
+    expect(PostgresError::sqlState($sameKey))->toBe('23505')
+        ->and(PostgresError::constraint($sameKey))->toBe(IdempotencyGuard::UNIQUE_CONSTRAINT)
+        ->and(IdempotencyGuard::UNIQUE_CONSTRAINT)->toBe('dispensations_idempotency_key_unique')
+        ->and($guard->isKeyCollision($sameKey))->toBeTrue()
+        ->and(PostgresError::constraint($other))->toBe('users_email_unique')
+        ->and($guard->isKeyCollision($other))->toBeFalse();
 });
 
 it('RN-09: el orden de las líneas no cambia el hash', function () {
