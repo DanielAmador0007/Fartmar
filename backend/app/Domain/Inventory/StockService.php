@@ -95,8 +95,7 @@ final class StockService
             throw ExpiredLotException::forLot($lot->id, $lot->lot_number, $lot->expires_at);
         }
 
-        $stock->quantity -= $quantity;
-        $stock->save();
+        $this->applyDelta($stock, -$quantity);
 
         return $this->kardex->record($stock, $type, $quantity, -1, $user, $reference, $reason);
     }
@@ -130,10 +129,30 @@ final class StockService
 
         $stock = $this->lockRow($warehouseId, $lot->id) ?? throw new LogicException('No se pudo crear la existencia.');
 
-        $stock->quantity += $quantity;
-        $stock->save();
+        $this->applyDelta($stock, $quantity);
 
         return $this->kardex->record($stock, $type, $quantity, 1, $user, $reference, $reason);
+    }
+
+    /**
+     * UPDATE relativo (quantity = quantity ± n) en vez de escribir un valor
+     * calculado en PHP. Con el FOR UPDATE da lo mismo; pero si algún camino
+     * llegara sin bloqueo, con un valor absoluto dos transacciones escribirían
+     * el mismo saldo y se perdería una salida en silencio (el CHECK nunca ve
+     * un negativo). Con el UPDATE relativo, PostgreSQL recalcula sobre la
+     * versión confirmada y el CHECK (quantity >= 0) rechaza la sobreventa.
+     * RETURNING trae el saldo real para el balance_after del kardex.
+     */
+    private function applyDelta(Stock $stock, int $delta): void
+    {
+        /** @var object{quantity: int|string} $row */
+        $row = DB::selectOne(
+            'update "stocks" set "quantity" = "quantity" + ?, "updated_at" = ? where "id" = ? returning "quantity"',
+            [$delta, now(), $stock->id],
+        );
+
+        $stock->quantity = (int) $row->quantity;
+        $stock->syncOriginal();
     }
 
     private function lockRow(int $warehouseId, int $lotId): ?Stock
