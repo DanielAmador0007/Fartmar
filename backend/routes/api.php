@@ -10,9 +10,14 @@ use Illuminate\Support\Facades\Route;
 | (header Authorization: Bearer <token>). Permisos en app/Policies.
 */
 
+// IDs de ruta: 1 a 18 dígitos (siempre caben en bigint). Con whereNumber un
+// id enorme llegaba a PostgreSQL y respondía 500 en vez de 404.
+Route::pattern('dispensation', '[1-9][0-9]{0,17}');
+
 Route::prefix('v1')->group(function (): void {
+    // Limitador "login" (AppServiceProvider): por correo + IP y por IP.
     Route::post('auth/login', [AuthController::class, 'login'])
-        ->middleware('throttle:10,1')
+        ->middleware('throttle:login')
         ->name('auth.login');
 
     Route::middleware('auth:sanctum')->group(function (): void {
@@ -23,11 +28,11 @@ Route::prefix('v1')->group(function (): void {
         Route::get('dispensations/preview', [DispensationController::class, 'preview'])->name('dispensations.preview');
         Route::post('dispensations', [DispensationController::class, 'store'])->name('dispensations.store');
         Route::get('dispensations/{dispensation}', [DispensationController::class, 'show'])
-            ->whereNumber('dispensation')->name('dispensations.show');
+            ->name('dispensations.show');
         Route::post('dispensations/{dispensation}/authorize', [DispensationController::class, 'authorizeControlled'])
-            ->whereNumber('dispensation')->name('dispensations.authorize');
+            ->name('dispensations.authorize');
         Route::post('dispensations/{dispensation}/reject', [DispensationController::class, 'reject'])
-            ->whereNumber('dispensation')->name('dispensations.reject');
+            ->name('dispensations.reject');
 
         // Inventario (consulta).
         Route::get('stocks', [StockController::class, 'index'])->name('stocks.index');

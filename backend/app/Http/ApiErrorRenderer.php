@@ -17,9 +17,10 @@ use Throwable;
  *
  *   { "error": { "code": "STOCK_INSUFICIENTE", "message": "...", "details": {} } }
  *
- * Se registra en bootstrap/app.php. Devuelve null para lo que no reconoce
- * (errores 500 inesperados), que Laravel maneja por defecto sin exponer
- * detalles cuando APP_DEBUG=false.
+ * Se registra en bootstrap/app.php. Los errores 500 inesperados salen como
+ * ERROR_INTERNO sin detalles cuando APP_DEBUG=false (producción); con
+ * APP_DEBUG=true se deja el detalle de Laravel para depurar. La excepción
+ * igual se registra en el log (el render no impide el report).
  *
  * Nota: Laravel ya convirtió AuthorizationException en
  * AccessDeniedHttpException y ModelNotFoundException en NotFoundHttpException
@@ -39,7 +40,14 @@ final class ApiErrorRenderer
             $e instanceof AuthenticationException => self::error(401, 'NO_AUTENTICADO', 'Debe iniciar sesión para continuar.'),
             $e instanceof AccessDeniedHttpException => self::error(403, 'NO_AUTORIZADO', 'Su rol no tiene permiso para realizar esta acción.'),
             $e instanceof NotFoundHttpException => self::error(404, 'NO_ENCONTRADO', 'El recurso solicitado no existe.'),
-            $e instanceof HttpExceptionInterface && $e->getStatusCode() === 429 => self::error(429, 'DEMASIADAS_SOLICITUDES', 'Demasiados intentos. Espere un momento y vuelva a intentar.'),
+            // Se conservan los headers del limitador (Retry-After, X-RateLimit-*).
+            $e instanceof HttpExceptionInterface && $e->getStatusCode() === 429 => self::error(429, 'DEMASIADAS_SOLICITUDES', 'Demasiados intentos. Espere un momento y vuelva a intentar.')
+                ->withHeaders($e->getHeaders()),
+            $e instanceof HttpExceptionInterface => null,
+            // Error inesperado (p. ej. QueryException, cuyo mensaje trae SQL,
+            // valores y host de la BD). Sin APP_DEBUG solo sale un mensaje
+            // genérico; con APP_DEBUG (desarrollo) Laravel muestra el detalle.
+            config('app.debug') !== true => self::error(500, 'ERROR_INTERNO', 'Ocurrió un error inesperado. Intente de nuevo o contacte a soporte.'),
             default => null,
         };
     }
