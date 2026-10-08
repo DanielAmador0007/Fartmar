@@ -111,3 +111,37 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Sin middleware de correlación aún: `correlation_id` del kardex y bitácoras queda `null` hasta la Fase 4 (se lee de `Context`).
   - La vista previa no bloquea: lo que muestra puede cambiar al confirmar (documentado en S-34).
   - Los tokens de Sanctum no expiran (S-36) y `Hash::check` contra un hash ficticio cuando el correo no existe es una mitigación básica de enumeración, no perfecta.
+
+### 2026-10-08 — Fase 2: pruebas de concurrencia real y casos borde de dispensación
+- Agente: qa-tester
+- Qué generó la IA:
+  - `backend/tests/Concurrency/bin/dispense-worker.php`: script que arranca Laravel en un **proceso PHP propio** (conexión propia a PostgreSQL), espera en una barrera y llama a `DispenseService::create` real. Imprime una línea JSON con el resultado.
+  - `backend/tests/Support/ConcurrentDispenser.php`: lanza N workers con `Process::start`, los suelta a la vez con una barrera de `pg_advisory_lock` (la prueba tiene el lock exclusivo; cuando `pg_locks` muestra N esperas, lo suelta) y verifica el kardex (`balance_after` encadenado desde 0 y suma = `stocks.quantity`). También lee `pg_stat_database.deadlocks`.
+  - `backend/tests/Concurrency/DispenseConcurrencyTest.php` (grupo `concurrency`, `DatabaseTruncation` + truncado al final; sin `RefreshDatabase`): última unidad con 8 procesos; stock 5 en 2 lotes con 10 procesos (FEFO bajo concurrencia); misma `Idempotency-Key` en 8 procesos; líneas en orden inverso sin deadlocks; prueba de control sin `FOR UPDATE`.
+  - `tests/Feature/Dispensing/DispenseEdgeCasesTest.php` (13 casos) y 4 pruebas más en `DispensationApiTest.php`.
+  - Objetivo `test-concurrency` en `Makefile` y `make.ps1`. Supuestos S-38 y S-39.
+  - **Fix** en `StockService`: el saldo se actualiza con `UPDATE ... SET quantity = quantity ± n RETURNING quantity` en vez de `$stock->quantity -= n; save()`.
+- Qué decisión tomó y por qué:
+  - Procesos reales (no hilos ni mocks) para que cada solicitud tenga su conexión y los `FOR UPDATE` se bloqueen de verdad. Cada worker usa una prescripción distinta para que la única disputa sea el stock.
+  - Barrera con advisory lock en vez de `sleep`: arranque de Laravel (lento) **antes** de la barrera; todos salen a la vez y la prueba es determinista (resultados exactos, no "a veces").
+  - Prueba de control: el worker en modo `unsafe` cambia la gramática SQL de **su** conexión para quitar todos los `FOR UPDATE` y pausa tras cada lectura de `stocks`. No toca código de producción. Antes del fix, 5 procesos vendían la misma unidad y el stock quedaba en 0 (actualización perdida: cada uno escribía `quantity = 0`, el CHECK nunca veía un negativo). Con el UPDATE relativo, 1 sale y el resto lo frena el CHECK `stocks_quantity_non_negative`.
+  - Mutaciones verificadas a mano (y revertidas): quitar los `FOR UPDATE` en `StockService` hace fallar las pruebas de última unidad y de 2 lotes; bloquear por id de línea en vez de por `product_id` hace que PostgreSQL registre 17–19 deadlocks (la prueba lo detecta aunque el reintento de `DB::transaction` los recupere); calcular "hoy" en UTC hace fallar las pruebas de vencimiento en Bogotá.
+- Puntos que Daniel debe revisar/entender:
+  - Cómo funciona la barrera (`pg_advisory_lock` exclusivo en la prueba / `pg_advisory_lock_shared` en cada worker) y por qué la prueba no puede usar `RefreshDatabase` (los workers no verían datos sin confirmar y no habría contención real).
+  - Por qué el UPDATE relativo importa aunque exista `FOR UPDATE`: es lo que hace que el CHECK sea de verdad "la última línea de defensa".
+  - La prueba de deadlocks mira el **contador** de PostgreSQL: con `DB::transaction(fn, 3)` un deadlock se reintenta y la prueba pasaría igual si solo se miraran los resultados.
+  - Cobertura RN → archivo de prueba (para el README):
+    | RN | Pruebas |
+    |---|---|
+    | RN-01 | `Unit/FefoAllocatorTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (borde de medianoche en Bogotá) |
+    | RN-02 | `Unit/FefoAllocatorTest`, `Feature/Dispensing/DispenseServiceTest`, `Concurrency/DispenseConcurrencyTest` (FEFO con 10 procesos) |
+    | RN-03 | `Concurrency/DispenseConcurrencyTest`, `Feature/Database/InventoryConstraintsTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (atomicidad multi-línea) |
+    | RN-04 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Database/DispensingConstraintsTest`, `Feature/Api/DispensationApiTest` |
+    | RN-05 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Database/DispensingConstraintsTest`, `Feature/Api/DispensationApiTest` |
+    | RN-06 | `Feature/Database/InventoryConstraintsTest` (inmutabilidad), `Feature/Inventory/StockServiceTest`, `Concurrency/DispenseConcurrencyTest` (kardex = stock tras cada escenario) |
+    | RN-09 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Api/DispensationApiTest`, `Concurrency/DispenseConcurrencyTest` (misma clave en 8 procesos) |
+- Riesgos o cosas que podrían estar mal:
+  - Las pruebas de concurrencia tardan unos 30 s porque cada worker arranca Laravel sobre el volumen montado de Docker en Windows; en CI (Linux) debería ser más rápido.
+  - El modo `unsafe` depende de que `Builder::lock()` pase por `compileLock()` de la gramática de PostgreSQL; si Laravel cambia eso, la prueba de control podría dejar de quitar los bloqueos (fallaría en la aserción de `CHECK_VIOLATION`, no pasaría en silencio).
+  - `DatabaseTruncation` + `afterEach` truncan todas las tablas de `fartmar_test`; si alguien agrega datos fijos de referencia por migración, habría que excluirlos.
+  - El replay de idempotencia devuelve la dispensación en su **estado actual** (p. ej. una pendiente que ya se autorizó vuelve como COMPLETADA), no una copia literal de la primera respuesta. Es razonable, pero conviene mencionarlo.
