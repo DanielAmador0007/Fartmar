@@ -65,6 +65,34 @@ it('RN-09: reintento con la misma clave devuelve 200 + Idempotent-Replayed sin n
         ->and(Dispensation::query()->count())->toBe(1);
 });
 
+it('RN-09 (S-46): el reintento devuelve el estado ACTUAL de la dispensación, no una copia de la primera respuesta', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
+    Sanctum::actingAs($s->auxiliar);
+    $key = (string) Str::uuid();
+
+    $id = postDispensation($s->payload(2), $key)
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'PENDIENTE_AUTORIZACION')
+        ->json('data.id');
+
+    Sanctum::actingAs($s->regente);
+    test()->postJson("/api/v1/dispensations/{$id}/authorize")->assertOk();
+
+    // El auxiliar reintenta (p. ej. se le cortó la red en el primer POST):
+    // ve que ya está COMPLETADA y no se mueve stock otra vez.
+    Sanctum::actingAs($s->auxiliar);
+    postDispensation($s->payload(2), $key)
+        ->assertOk()
+        ->assertHeader('Idempotent-Replayed', 'true')
+        ->assertJsonPath('data.id', $id)
+        ->assertJsonPath('data.status', 'COMPLETADA')
+        ->assertJsonPath('data.authorized_by.id', $s->regente->id);
+
+    expect(KardexMovement::query()->count())->toBe(1)
+        ->and($s->totalStock())->toBe(8)
+        ->and(Dispensation::query()->count())->toBe(1);
+});
+
 it('RN-09: misma clave con otro contenido responde 409 IDEMPOTENCIA_CONFLICTO', function () {
     $s = DispensingScenario::make([[30, 10]], prescribed: 5);
     Sanctum::actingAs($s->auxiliar);

@@ -109,7 +109,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DispensationEnvelope' }
         '200':
-          description: Reintento con la misma clave y el mismo contenido; se devuelve la original
+          description: Reintento con la misma clave y el mismo contenido; se devuelve la misma dispensación en su estado ACTUAL (p. ej. COMPLETADA si ya se autorizó), sin nueva salida de stock (S-46)
           headers:
             Idempotent-Replayed:
               schema: { type: string, enum: ['true'] }
