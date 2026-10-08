@@ -6,7 +6,7 @@ COMPOSE := docker compose
 API     := $(COMPOSE) exec -T api
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down reset logs shell fresh test test-backend test-frontend lint lint-backend lint-frontend fix eval frontend-install frontend-dev
+.PHONY: help env up down reset logs shell fresh test test-backend test-concurrency test-frontend lint lint-backend lint-frontend fix eval frontend-install frontend-dev
 
 help: ## Lista los objetivos disponibles
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -35,8 +35,11 @@ fresh: ## Recrea el esquema de la BD de desarrollo y ejecuta seeders
 
 test: test-backend test-frontend ## Ejecuta todas las pruebas
 
-test-backend: ## Pest (contra la BD fartmar_test)
+test-backend: ## Pest (contra la BD fartmar_test; incluye el grupo concurrency)
 	$(API) ./vendor/bin/pest
+
+test-concurrency: ## Solo las pruebas de concurrencia real (procesos PHP en paralelo)
+	$(API) ./vendor/bin/pest --group=concurrency
 
 test-frontend: ## Vitest
 	cd frontend && npm run test:run

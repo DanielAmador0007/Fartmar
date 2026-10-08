@@ -39,7 +39,8 @@ Objetivos:
   shell             Shell en el contenedor de la API
   fresh             migrate:fresh --seed en la BD de desarrollo
   test              Pest + Vitest
-  test-backend      Pest (BD fartmar_test)
+  test-backend      Pest (BD fartmar_test; incluye el grupo concurrency)
+  test-concurrency  Solo pruebas de concurrencia real (procesos en paralelo)
   test-frontend     Vitest
   lint              Pint, Larastan, ESLint y tsc
   fix               Aplica formato de Pint
@@ -55,6 +56,7 @@ Objetivos:
     'shell' { docker compose exec api sh }
     'fresh' { Invoke-Api @('php', 'artisan', 'migrate:fresh', '--seed', '--force') }
     'test-backend' { Invoke-Api @('./vendor/bin/pest') }
+    'test-concurrency' { Invoke-Api @('./vendor/bin/pest', '--group=concurrency') }
     'test-frontend' { Invoke-Step 'npm' @('run', 'test:run') $Frontend }
     'test' {
         Invoke-Api @('./vendor/bin/pest')
