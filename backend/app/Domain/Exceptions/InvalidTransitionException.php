@@ -8,7 +8,7 @@ namespace App\Domain\Exceptions;
  */
 final class InvalidTransitionException extends BusinessRuleException
 {
-    public static function between(string $entity, int $id, string $from, string $to): self
+    public static function between(string $entity, ?int $id, string $from, string $to): self
     {
         return new self(
             "No se puede pasar de {$from} a {$to}: la operación no está permitida en el estado actual.",
