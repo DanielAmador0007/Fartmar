@@ -83,6 +83,16 @@ final class ApiErrorRenderer
                 'PRESCRIPCION_EXCEDIDA',
                 'La cantidad supera lo que queda por entregar de la prescripción. Actualice la prescripción e intente de nuevo.',
             ),
+            PostgresError::isViolationOf($e, PostgresError::CHECK_VIOLATION, 'transfers_approver_differs') => self::error(
+                403,
+                'SEGREGACION_FUNCIONES',
+                'Quien solicitó el traslado no puede aprobarlo; debe hacerlo otro regente de farmacia.',
+            ),
+            PostgresError::isViolationOf($e, PostgresError::CHECK_VIOLATION, 'kardex_movements_adjustment_reason_required') => self::error(
+                422,
+                'AJUSTE_INVALIDO',
+                'Todo ajuste de inventario necesita un motivo.',
+            ),
             // DB::transaction(..., 3) ya reintentó y se agotaron los intentos.
             PostgresError::isConcurrencyFailure($e) => self::error(
                 409,
