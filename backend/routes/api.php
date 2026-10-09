@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AlertController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DispensationController;
 use App\Http\Controllers\InventoryAdjustmentController;
@@ -61,5 +62,6 @@ Route::prefix('v1')->group(function (): void {
         // Ajustes, kardex y alertas (RN-06, RN-11).
         Route::post('inventory-adjustments', [InventoryAdjustmentController::class, 'store'])->name('inventory-adjustments.store');
         Route::get('kardex', [KardexController::class, 'index'])->name('kardex.index');
+        Route::get('alerts', [AlertController::class, 'index'])->name('alerts.index');
     });
 });
