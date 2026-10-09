@@ -208,3 +208,39 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - El bloqueo de la prescripción serializa TODAS las dispensaciones de una misma prescripción (correcto y barato: son pocas por paciente), pero también las de reintentos con la misma clave.
   - El límite de 120/min usa la caché por defecto; con varias réplicas debe ser compartida.
 
+
+### 2026-10-08 — Fase 3: traslados, ajustes de inventario, alertas y consulta de kardex
+- Agente: backend-dominio (Claude Code)
+- Qué generó la IA:
+  - `app/Domain/Transfers/TransferStateMachine.php`: mapa explícito de transiciones (RN-07) y `assertCanTransition(from, to)` → 409 `TRANSICION_INVALIDA`. Clase pura; `tests/Unit/TransferStateMachineTest.php` prueba las 49 parejas (desde, hacia) contra una lista escrita a mano.
+  - `app/Domain/Transfers/TransferService.php`: `create`, `submit`, `approve`, `dispatch`, `receive`, `cancel`, `resolveDiscrepancy`; DTOs `TransferData`/`TransferItemData`; `TransferQuery` (listados). Excepciones nuevas `TransferNotValidException` (422 `TRASLADO_INVALIDO`) y `AdjustmentNotValidException` (422 `AJUSTE_INVALIDO`); `SegregationOfDutiesException::notRequester`.
+  - `app/Domain/Inventory/AdjustmentService.php` (ajustes), `AlertService.php` + `ExpiringLotAlert`/`LowStockAlert` (RN-11), `KardexQuery.php` (consulta paginada).
+  - Migración `2026_10_08_211000_add_transfer_resolution_guards.php` (justificación en su docblock): columna `transfer_discrepancies.resolution_action` con CHECK, trigger "quien resuelve es regente" (cierra un riesgo abierto en PROGRESO.md) y CHECK "anular exige motivo". Enum `DiscrepancyResolution`.
+  - API `/api/v1`: `TransferController`, `TransferDiscrepancyController`, `InventoryAdjustmentController`, `KardexController`, `AlertController`; 9 Form Requests; `TransferPolicy`, `TransferDiscrepancyPolicy`, `KardexMovementPolicy`; Resources `TransferResource`, `TransferDiscrepancyResource`, `KardexMovementResource`, `AlertsResource`; `Route::pattern` para `transfer` y `discrepancy`. `ApiErrorRenderer` traduce el CHECK de RN-08 (`transfers_approver_differs`) a 403 `SEGREGACION_FUNCIONES` y el del motivo de AJUSTE a 422.
+  - Pruebas: `tests/Feature/Transfers/TransferServiceTest.php`, `tests/Feature/Api/TransferApiTest.php`, `tests/Feature/Api/AdjustmentAndKardexApiTest.php`, `tests/Feature/Inventory/{AdjustmentServiceTest,AlertsTest}.php`, `tests/Concurrency/TransferConcurrencyTest.php` (5 pruebas con procesos reales), `tests/Support/TransferScenario.php`; `AuthorizationMatrixTest` ampliada a 20 endpoints × 5 roles; el worker de concurrencia admite `transfer-approve|dispatch|cancel`. Total: 446 pruebas (1651 aserciones), 14 de concurrencia.
+  - Docs: `docs/openapi.yaml` (v0.3.0, 10 rutas nuevas), supuestos S-48…S-59, `docs/modelo-datos.md`.
+- Qué decisión tomó y por qué:
+  - **Flujo transaccional en lenguaje simple.** Todas las operaciones de traslado hacen lo mismo, dentro de una sola transacción que PostgreSQL deshace completa si algo falla:
+    1. "Toman el turno" del traslado: `SELECT … FOR UPDATE` sobre la fila del traslado. Si dos personas despachan (o aprueban, o reciben) el mismo traslado al mismo tiempo, la segunda espera aquí.
+    2. Ya con el turno, leen el estado y preguntan a la máquina de estados si el paso es válido. La segunda persona ve que el traslado ya cambió (p. ej. ya está `EN_TRANSITO`) y recibe 409; por eso nunca hay doble salida de stock.
+    3. Mueven stock solo a través de `StockService` (el único que toca `stocks`), que además escribe el kardex con el saldo resultante. **Despachar**: por cada producto, en orden de `product_id`, bloquea las existencias NO vencidas del origen en orden FEFO, el asignador reparte entre lotes, sale `SALIDA_TRASLADO` por lote y se guarda qué lote salió (`transfer_item_lots`). Si un producto no alcanza, se lanza `STOCK_INSUFICIENTE` y se deshace TODO (nada sale de ningún producto). **Recibir**: por cada lote despachado se anota lo que llegó, entra `ENTRADA_TRASLADO` en el destino y, si faltó algo, se crea una discrepancia `PENDIENTE` de ese lote; el estado final es `RECIBIDO` o `RECIBIDO_PARCIAL`.
+    4. Cambian el estado con quién y cuándo, y escriben la transición en `audit_logs` (solo IDs, estados y cantidades).
+  - **Orden de bloqueo** igual al de la dispensación: cabecera (traslado) → lotes del traslado por id → existencias por `product_id` y luego `(expires_at, lot_id)`. Como un despacho y una dispensación en la misma bodega bloquean existencias en el mismo orden, no se esperan en círculo; la prueba "sin deadlocks" lo verifica con el contador de deadlocks de PostgreSQL.
+  - **Verificación de que las pruebas detectan el problema:** se quitó a mano el `lockForUpdate()` de la cabecera y las pruebas de "4 procesos despachan el MISMO traslado" y "dos regentes aprueban a la vez" fallaron (varios OK a la vez); con el bloqueo pasan.
+  - **Discrepancias (S-50):** dos salidas físicas posibles: `REINTEGRAR_ORIGEN` (las unidades nunca salieron: `AJUSTE` + en el origen cuyo motivo cita discrepancia y traslado) o `PERDIDA` (solo se registra; el stock ya había salido). Se agregó columna en vez de meter la acción en el texto para poder exigirla con CHECK y filtrarla.
+  - **Lote vencido en tránsito (S-48):** se recibe, porque la recepción registra lo que físicamente llegó; RN-01 sigue impidiendo dispensarlo o trasladarlo de nuevo (hay prueba).
+  - **Permisos (S-49, S-52, S-53):** crear, despachar y recibir: auxiliar o regente; solicitar: solo quien creó el borrador; aprobar: regente distinto del solicitante (403 `SEGREGACION_FUNCIONES`); anular: quien lo creó o un regente; resolver discrepancias y ajustar: regente; listados, kardex y alertas: también auditor. Todo en Policies; el servicio repite las reglas de negocio (RN-08, rol regente) como en la Fase 2.
+  - **Despacho todo o nada (S-54) y recepción única con todos los lotes (S-55):** menos estados y menos casos raros que explicar.
+  - **Ajustes (S-56):** sin tabla propia; el movimiento `AJUSTE` del kardex es el registro y `audit_logs` guarda IDs/cantidades sin el motivo (texto libre).
+  - **Alertas (S-51):** incluyen lotes ya vencidos con unidades; el mínimo compara solo stock no vencido y es estricto (`<`).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué `lockForTransition()` bloquea ANTES de leer el estado: si se leyera sin bloqueo, dos procesos verían `APROBADO` y ambos despacharían (es justo lo que demostró la prueba con el bloqueo quitado).
+  - En `receive()` se valida primero contra `RECIBIDO` y al final contra el estado real (`RECIBIDO` o `RECIBIDO_PARCIAL`): ambos salen solo de `EN_TRANSITO`.
+  - La matriz de `AuthorizationMatrixTest`: para `submit` y `cancel` el borrador se crea a nombre del usuario que prueba, porque la regla depende de quién lo creó.
+  - Que la migración nueva obligó a ajustar datos de `tests/Feature/Database/TransferConstraintsTest.php` (Fase 1): las filas RESUELTA ahora llevan `resolution_action` y las ANULADO motivo.
+- Riesgos o cosas que podrían estar mal:
+  - No hay alcance por bodega (S-52): cualquier auxiliar puede despachar o recibir cualquier traslado. Si la IPS asigna personal a bodegas, hay que modelarlo y restringir en `TransferPolicy`.
+  - `GET /alerts` no está paginado (devuelve todas las alertas); con muchos lotes podría ser pesado. Para la demo basta.
+  - La resolución de una discrepancia no cambia el estado del traslado (`RECIBIDO_PARCIAL` es final); el frontend debe mirar el estado de cada discrepancia para saber si quedó algo pendiente.
+  - La BD no impide que un traslado salte estados con un UPDATE manual (valida la fila final, no el paso); eso lo garantiza solo `TransferStateMachine` dentro del servicio.
+  - El trigger de rol de quien resuelve no verifica `is_active` (igual que en dispensaciones y aprobaciones): lo cubren Policy y servicio.
