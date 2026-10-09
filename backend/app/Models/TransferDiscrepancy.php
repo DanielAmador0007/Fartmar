@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\DiscrepancyResolution;
 use App\Enums\DiscrepancyStatus;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -14,14 +15,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $transfer_item_lot_id
  * @property int $quantity_missing
  * @property DiscrepancyStatus $status
- * @property string|null $resolution
+ * @property DiscrepancyResolution|null $resolution_action
+ * @property string|null $resolution Texto libre del regente: NO confiable.
  * @property int|null $resolved_by
  * @property CarbonImmutable|null $resolved_at
+ * @property CarbonImmutable $created_at
  */
 class TransferDiscrepancy extends Model
 {
     /** @var list<string> */
-    protected $fillable = ['transfer_item_lot_id', 'quantity_missing', 'status', 'resolution', 'resolved_by', 'resolved_at'];
+    protected $fillable = ['transfer_item_lot_id', 'quantity_missing', 'status', 'resolution_action', 'resolution', 'resolved_by', 'resolved_at'];
 
     /**
      * @return array<string, string>
@@ -31,7 +34,9 @@ class TransferDiscrepancy extends Model
         return [
             'quantity_missing' => 'integer',
             'status' => DiscrepancyStatus::class,
+            'resolution_action' => DiscrepancyResolution::class,
             'resolved_at' => 'immutable_datetime',
+            'created_at' => 'immutable_datetime',
         ];
     }
 
