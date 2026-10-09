@@ -135,7 +135,7 @@ it('rechaza recibir más de lo despachado y discrepancias inválidas', function 
         'transfer_discrepancies_missing_positive',
     );
     expectDbRejects(fn () => DB::table('transfer_discrepancies')->insert([
-        'transfer_item_lot_id' => $itemLotId, 'quantity_missing' => 2, 'status' => 'RESUELTA',
+        'transfer_item_lot_id' => $itemLotId, 'quantity_missing' => 2, 'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA',
     ]), 'transfer_discrepancies_resolution_complete');
 
     // Recepción parcial válida + discrepancia pendiente.
@@ -183,12 +183,12 @@ it('RN-07: anular antes del despacho es válido, pero exige quién y cuándo', f
     ]));
 
     expectDbRejects(
-        fn () => DB::table('transfers')->where('id', $id)->update(['status' => 'ANULADO']),
+        fn () => DB::table('transfers')->where('id', $id)->update(['status' => 'ANULADO', 'cancellation_reason' => 'Ya no se necesita']),
         'transfers_cancel_before_dispatch',
     );
 
     DB::table('transfers')->where('id', $id)->update([
-        'status' => 'ANULADO', 'cancelled_by' => $regente->id, 'cancelled_at' => now(),
+        'status' => 'ANULADO', 'cancelled_by' => $regente->id, 'cancelled_at' => now(), 'cancellation_reason' => 'Ya no se necesita',
     ]);
     expect(DB::table('transfers')->where('id', $id)->value('status'))->toBe('ANULADO');
 });
@@ -276,11 +276,12 @@ it('discrepancias: una por lote despachado, estado válido y resolución complet
         'transfer_discrepancies_transfer_item_lot_id_unique',
     );
     expectDbRejects(fn () => DB::table('transfer_discrepancies')->where('id', $discrepancyId)->update([
-        'status' => 'RESUELTA', 'resolved_by' => User::factory()->regente()->create()->id, 'resolved_at' => now(), 'resolution' => ' ',
+        'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA', 'resolved_by' => User::factory()->regente()->create()->id, 'resolved_at' => now(), 'resolution' => ' ',
     ]), 'transfer_discrepancies_resolution_complete');
 
     DB::table('transfer_discrepancies')->where('id', $discrepancyId)->update([
         'status' => 'RESUELTA',
+        'resolution_action' => 'PERDIDA',
         'resolved_by' => User::factory()->regente()->create()->id,
         'resolved_at' => now(),
         'resolution' => 'Unidad rota en transporte; se registra AJUSTE',
