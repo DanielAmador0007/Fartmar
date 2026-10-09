@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DispensationController;
+use App\Http\Controllers\InventoryAdjustmentController;
+use App\Http\Controllers\KardexController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TransferController;
 use App\Http\Controllers\TransferDiscrepancyController;
@@ -56,5 +58,8 @@ Route::prefix('v1')->group(function (): void {
         Route::post('transfer-discrepancies/{discrepancy}/resolve', [TransferDiscrepancyController::class, 'resolve'])
             ->name('transfer-discrepancies.resolve');
 
+        // Ajustes, kardex y alertas (RN-06, RN-11).
+        Route::post('inventory-adjustments', [InventoryAdjustmentController::class, 'store'])->name('inventory-adjustments.store');
+        Route::get('kardex', [KardexController::class, 'index'])->name('kardex.index');
     });
 });
