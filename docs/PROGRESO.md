@@ -1,7 +1,10 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-08, al cerrar la Fase 1.
+> Última actualización: 2026-10-08, al cerrar la Fase 2.
+>
+> Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
+> siguiente fase desde `main` actualizado (`git checkout main; git pull`).
 
 ## Cómo retomar en un chat nuevo
 
@@ -20,8 +23,8 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 |---|---|---|
 | 0 Andamiaje | ✅ Hecha | Laravel 13.35 / PHP 8.4, Vite 8 + React 19, compose `fartmar`, CI, `/health` `/ready` |
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
-| 2 Dispensación (FEFO, concurrencia, idempotencia) | ⏭️ **Siguiente** | backend-dominio → qa-tester → seguridad-privacidad |
-| 3 Traslados, ajustes, alertas | Pendiente | |
+| 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR `feat/fase-2-dispensacion`) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
+| 3 Traslados, ajustes, alertas | ⏭️ **Siguiente** | backend-dominio → qa-tester; reutilizar `StockService` (ya admite salida/entrada de traslado y `AJUSTE`) y `ConcurrentDispenser` |
 | 4 Seguridad y privacidad | Pendiente | |
 | 5 Frontend | Pendiente | |
 | 6 Asistente IA | Pendiente | |
@@ -46,7 +49,19 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
 
-## Lo que la Fase 2 debe saber del esquema
+## Lo que la Fase 3 debe saber de la Fase 2
+
+- `StockService` es el **único** punto que escribe `stocks` (UPDATE relativo + `RETURNING` para `balance_after`);
+  exige transacción abierta y bloquea con `FOR UPDATE OF stocks` ordenado por `(product_id, expires_at, lot_id)`.
+- Orden de bloqueo global: cabecera de negocio (prescripción/traslado) → líneas por id → existencias por producto.
+  En dispensación se bloquea la prescripción **antes** de insertar la dispensación (evita deadlock por la FK).
+- Errores de BD mapeados en `ApiErrorRenderer` vía `App\Database\PostgresError` (CHECK, deadlock, serialización).
+- Pruebas de concurrencia: `tests/Concurrency` (worker en procesos reales + barrera con advisory lock); grupo
+  Pest `concurrency`, `.\make.ps1 test-concurrency`.
+- Pendiente menor de la revisión: `sanctum:prune-expired` está programado pero no hay scheduler en compose (Fase 7);
+  `correlation_id`/`ip` en `null` hasta el middleware de la Fase 4.
+
+## Lo que la Fase 2 debía saber del esquema
 
 - Dispensación en 3 niveles: `dispensations` → `dispensation_items` (por línea de prescripción) →
   `dispensation_item_lots` (lotes asignados por FEFO). Un controlado se crea `PENDIENTE_AUTORIZACION`
@@ -63,8 +78,7 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   por lote despachado.
 - La BD no valida: FEFO, vencimiento, vigencia de prescripción, transiciones de estado (valida la fila
   final, no el paso). Todo eso va en `app/Domain` con pruebas.
-- Los seeders escriben stock y kardex directamente (aún no existe `KardexService`); al crearlo, conviene
-  que el seeder lo use.
+- El seeder de inventario ya usa `StockService` (hecho en la Fase 2).
 
 ## Riesgos conocidos / deuda abierta
 
@@ -74,6 +88,31 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - La BD no exige que quien resuelve una discrepancia sea regente ni que autorizadores estén activos
   (`is_active`): cubrir en Policies (Fase 3/4) o con trigger.
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
+
+### Pendientes de seguridad detectados en la revisión de la Fase 2 (para Fase 4 / 7)
+
+- **[Alto · Fase 4] PII y secretos en logs de excepciones:** `QueryException` incluye el SQL **con los valores**
+  (se vio en pruebas: un INSERT de `users` con correo y hash de contraseña). Laravel lo registra al reportar un 500.
+  Falta el procesador Monolog que redacte claves sensibles y los valores de SQL, y logs JSON a stdout
+  (hoy `LOG_CHANNEL=stderr` en texto plano).
+- **[Alto · Fase 7] `APP_DEBUG=true` por defecto** en `docker-compose.yml` y `.env.example` (correcto para demo
+  local). La imagen/compose de producción debe forzar `APP_ENV=production` y `APP_DEBUG=false`; con debug activo
+  cualquier 500 no capturado expone SQL y host. El renderizador ya responde `ERROR_INTERNO` si debug está apagado (S-44).
+- **[Medio · Fase 4] Middleware `X-Correlation-Id`:** `correlation_id` de dispensaciones, kardex y `audit_logs`
+  sigue en `null`; `audit_logs.ip` también (nadie llena `Context::get('ip')`).
+- **[Medio · Fase 4] Intentos de login fallidos no se auditan** (solo los exitosos y el logout). Agregar
+  `auth.login_failed` en `audit_logs` sin el correo en claro (p. ej. HMAC del correo) para detectar fuerza bruta.
+- **[Medio · Fase 4] `patient_access_logs`, endpoint de pacientes y enmascarado para auditor (`PatientMasker`):**
+  aún no existen. Hoy ningún Resource expone datos del paciente (solo `patient_id`), verificado en pruebas.
+- **[Medio · Fase 4] Al desactivar un usuario (CRUD de admin), revocar sus tokens** además de la verificación de
+  `is_active` en cada petición (S-41). Prueba de matriz `AuthorizationMatrixTest` debe ampliarse con cada endpoint nuevo.
+- **[Bajo] Enumeración de ids por rol sin permiso:** un médico recibe 404 por una dispensación inexistente y 403 por
+  una existente (el binding resuelve antes de la Policy). Solo revela que el id existe, sin datos.
+- **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
+- **[Bajo · Fase 7] Headers de seguridad** (CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`) en Nginx; hoy la
+  API corre con el servidor embebido de PHP.
+- **[Bajo] Primer login de cada worker** tarda más (se genera el hash ficticio para igualar tiempos); diferencia
+  medible solo en la primera petición del proceso.
 - Restos de Docker de la Fase 0 que Daniel puede borrar a mano si quiere:
   `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`.
 

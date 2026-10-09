@@ -53,4 +53,13 @@ class User extends Authenticatable
     {
         return $this->role === $role;
     }
+
+    /**
+     * Usuario activo con alguno de los roles dados. Lo usan las Policies;
+     * no usar en controladores.
+     */
+    public function isActiveWithRole(Role ...$roles): bool
+    {
+        return $this->is_active && in_array($this->role, $roles, true);
+    }
 }

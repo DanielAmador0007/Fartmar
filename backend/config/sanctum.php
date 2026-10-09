@@ -37,7 +37,10 @@ return [
     |
     */
 
-    'guard' => ['web'],
+    // FARTMAR: autenticación SOLO por token Bearer (S-40). Sin guard de
+    // sesión, Sanctum nunca acepta una cookie de sesión en la API, así que
+    // no hay superficie CSRF.
+    'guard' => [],
 
     /*
     |--------------------------------------------------------------------------
@@ -50,7 +53,10 @@ return [
     |
     */
 
-    'expiration' => null,
+    // FARTMAR: 480 min (un turno de 8 h) por defecto; ajustable con
+    // SANCTUM_EXPIRATION. Cuenta desde la creación del token (no se renueva
+    // con el uso). Los vencidos se borran con sanctum:prune-expired (diario).
+    'expiration' => (int) env('SANCTUM_EXPIRATION', 480),
 
     /*
     |--------------------------------------------------------------------------

@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Domain\Inventory\StockService;
 use App\Enums\KardexType;
-use App\Models\KardexMovement;
 use App\Models\Lot;
 use App\Models\Product;
 use App\Models\Stock;
@@ -16,8 +16,8 @@ use Illuminate\Support\Facades\DB;
 /**
  * Existencias iniciales y mínimos por bodega.
  *
- * Cada existencia inicial genera su movimiento ENTRADA en el kardex con
- * balance_after = cantidad, de modo que saldo = suma de movimientos (RN-06).
+ * Cada existencia inicial entra por StockService::increase(), que genera el
+ * movimiento ENTRADA en el kardex con balance_after = cantidad (RN-06).
  * Idempotencia: si la existencia (bodega + lote) ya existe NO se toca, porque
  * el kardex es inmutable y cambiar el saldo exigiría un AJUSTE con motivo.
  */
@@ -67,14 +67,14 @@ class InventorySeeder extends Seeder
         ['BOD-HOS', 'OME20', 10],
     ];
 
-    public function run(): void
+    public function run(StockService $stockService): void
     {
         $warehouses = Warehouse::query()->pluck('id', 'code');
         $lots = Lot::query()->get()->keyBy('lot_number');
         $products = Product::query()->pluck('id', 'code');
         $receiver = User::query()->where('email', 'regente@fartmar.test')->firstOrFail();
 
-        DB::transaction(function () use ($warehouses, $lots, $receiver): void {
+        DB::transaction(function () use ($warehouses, $lots, $receiver, $stockService): void {
             foreach (self::INITIAL_STOCK as [$warehouseCode, $lotNumber, $quantity]) {
                 $lot = $lots->get($lotNumber) ?? throw new \RuntimeException("Lote semilla inexistente: {$lotNumber}");
                 $warehouseId = $warehouses[$warehouseCode];
@@ -88,24 +88,14 @@ class InventorySeeder extends Seeder
                     continue;
                 }
 
-                Stock::query()->create([
-                    'warehouse_id' => $warehouseId,
-                    'lot_id' => $lot->id,
-                    'product_id' => $lot->product_id,
-                    'quantity' => $quantity,
-                ]);
-
-                KardexMovement::query()->create([
-                    'warehouse_id' => $warehouseId,
-                    'product_id' => $lot->product_id,
-                    'lot_id' => $lot->id,
-                    'type' => KardexType::Entrada,
-                    'quantity' => $quantity,
-                    'direction' => 1,
-                    'balance_after' => $quantity,
-                    'reason' => 'Inventario inicial (datos semilla)',
-                    'user_id' => $receiver->id,
-                ]);
+                $stockService->increase(
+                    $warehouseId,
+                    $lot,
+                    $quantity,
+                    KardexType::Entrada,
+                    $receiver,
+                    reason: 'Inventario inicial (datos semilla)',
+                );
             }
         });
 

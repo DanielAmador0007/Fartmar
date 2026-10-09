@@ -76,3 +76,135 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - La BD valida la fila resultante, no la transición: un UPDATE que borre `dispatched_at` y ponga `ANULADO` en la misma sentencia pasaría (documentado en `docs/modelo-datos.md`).
   - No se exige por BD que `resolved_by` de una discrepancia sea regente, ni que el usuario que autoriza/aprueba esté activo (`is_active`), ni que una dispensación PENDIENTE no tenga lotes. Candidatos a reforzar si se decide.
   - Si cambia `products.is_controlled` después de crear dispensaciones, los triggers no revisan las existentes.
+
+### 2026-10-08 — Fase 2: núcleo de dispensación (FEFO, kardex, idempotencia, control especial) y API
+- Agente: backend-dominio (Claude Code)
+- Qué generó la IA:
+  - `app/Domain/Inventory`: `FefoAllocator` (función pura), `StockService` (único punto que cambia `stocks.quantity`), `KardexService`, `BusinessDate` ("hoy" en Bogotá), `InventoryQuery`.
+  - `app/Domain/Dispensing`: `DispenseService` (create / authorize / reject / preview), `IdempotencyGuard`, DTOs (`DispenseData`, `DispenseResult`, `FefoPreview`).
+  - `app/Domain/Exceptions`: excepciones de negocio con código, estado HTTP y detalles; `app/Http/ApiErrorRenderer.php` las convierte a `{ error: { code, message, details } }` (registrado en `bootstrap/app.php`).
+  - `app/Domain/Auth/LoginService`, `app/Domain/Audit/AuditLogger`.
+  - API `/api/v1`: `auth/login|logout|me`, `dispensations` (POST con `Idempotency-Key`, GET, `preview`, `{id}/authorize`, `{id}/reject`), `stocks`. Form Requests, Policies (`DispensationPolicy`, `StockPolicy`) y Resources.
+  - El `InventorySeeder` ahora usa `StockService::increase()` (antes escribía stock y kardex a mano).
+  - Pruebas: 10 unitarias de FEFO, 8 de `StockService`, 23 de `DispenseService`, 29 de API. `docs/openapi.yaml` nuevo. Supuestos S-27…S-37.
+- Qué decisión tomó y por qué:
+  - **Flujo transaccional de una dispensación, en simple:** todo pasa dentro de una sola transacción; si algo falla en cualquier paso, la BD deshace todo (no queda stock descontado a medias ni kardex huérfano). Los pasos son:
+    1. ¿Ya existe esa `Idempotency-Key`? Si es el mismo contenido, se devuelve la dispensación original y no se toca nada; si el contenido cambió, 409.
+    2. Se inserta la cabecera de la dispensación **primero**, para "apartar" la clave. Si llega un segundo reintento idéntico al mismo tiempo, su INSERT queda esperando en el índice UNIQUE; cuando el primero confirma, el segundo falla con violación de UNIQUE, se deshace y el servicio devuelve la dispensación ganadora (carrera resuelta por la BD, sin locks extra).
+    3. Se bloquean (`FOR UPDATE`) la prescripción y sus líneas y se valida vigencia y saldo: prescrito − entregado − reservado por pendientes.
+    4. Si hay un controlado, se guarda como `PENDIENTE_AUTORIZACION` y termina (sin mover stock).
+    5. Si no, por cada producto (en orden de `product_id`) se bloquean sus existencias no vencidas en orden `(expires_at, lot_id)`, `FefoAllocator` decide cuánto sale de cada lote, y `StockService::decrease()` descuenta y escribe el kardex con el saldo resultante.
+  - **Orden de bloqueo fijo** (dispensación → prescripción → líneas por id → existencias por producto y FEFO) en todos los caminos para evitar deadlocks; `DB::transaction(fn, 3)` reintenta si aun así ocurre uno.
+  - `FefoAllocator` es puro (recibe filas ya bloqueadas) para probarlo sin BD; el bloqueo vive en `StockService::lockFefoCandidates()` con `FOR UPDATE OF stocks` (no bloquea filas de `lots`).
+  - `StockService::decrease()` vuelve a bloquear la fila, valida existencias y vencimiento y calcula `balance_after` desde la fila bloqueada: el saldo del kardex es correcto aunque otro llamador olvide bloquear antes. El CHECK `quantity >= 0` sigue siendo la última línea de defensa.
+  - El rol de regente se valida en la Policy (403 `NO_AUTORIZADO`) **y** en el servicio, que además exige "distinto del creador" con un error propio (403 `SEGREGACION_FUNCIONES`); la BD lo exige otra vez con CHECK + trigger.
+  - `IdempotencyGuard` no es `final` solo para poder simular la carrera con un mock parcial en la prueba.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué la cabecera se inserta **antes** de validar cantidades (paso 2): si se validara primero, un reintento que espera al primero podría recibir `PRESCRIPCION_EXCEDIDA` en vez de la respuesta original.
+  - Que `FOR UPDATE` en PostgreSQL (READ COMMITTED) espera a la otra transacción y luego **re-lee** la fila confirmada; por eso dos dispensaciones por la última unidad no pueden dejar stock negativo.
+  - La prueba "carrera por la misma clave" en `tests/Feature/Dispensing/DispenseServiceTest.php`: simula el segundo reintento con un mock que la primera vez "no ve" la clave.
+  - Supuestos S-30/S-31: una dispensación mixta queda entera pendiente; las pendientes reservan cantidad de la prescripción, no stock.
+  - El orden de códigos HTTP: 409 conflictos de estado/stock/idempotencia, 422 reglas de prescripción y validación, 403 permisos y segregación.
+- Riesgos o cosas que podrían estar mal:
+  - La concurrencia real (procesos paralelos, sin `RefreshDatabase`) **todavía no está probada**: la hará qa-tester en `tests/Concurrency`. Las pruebas actuales corren en una sola conexión.
+  - `isKeyCollision()` reconoce el UNIQUE por el nombre del índice (`dispensations_idempotency_key_unique`); si se renombra en una migración, la carrera devolvería 500.
+  - Sin middleware de correlación aún: `correlation_id` del kardex y bitácoras queda `null` hasta la Fase 4 (se lee de `Context`).
+  - La vista previa no bloquea: lo que muestra puede cambiar al confirmar (documentado en S-34).
+  - Los tokens de Sanctum no expiran (S-36) y `Hash::check` contra un hash ficticio cuando el correo no existe es una mitigación básica de enumeración, no perfecta.
+
+### 2026-10-08 — Fase 2: pruebas de concurrencia real y casos borde de dispensación
+- Agente: qa-tester
+- Qué generó la IA:
+  - `backend/tests/Concurrency/bin/dispense-worker.php`: script que arranca Laravel en un **proceso PHP propio** (conexión propia a PostgreSQL), espera en una barrera y llama a `DispenseService::create` real. Imprime una línea JSON con el resultado.
+  - `backend/tests/Support/ConcurrentDispenser.php`: lanza N workers con `Process::start`, los suelta a la vez con una barrera de `pg_advisory_lock` (la prueba tiene el lock exclusivo; cuando `pg_locks` muestra N esperas, lo suelta) y verifica el kardex (`balance_after` encadenado desde 0 y suma = `stocks.quantity`). También lee `pg_stat_database.deadlocks`.
+  - `backend/tests/Concurrency/DispenseConcurrencyTest.php` (grupo `concurrency`, `DatabaseTruncation` + truncado al final; sin `RefreshDatabase`): última unidad con 8 procesos; stock 5 en 2 lotes con 10 procesos (FEFO bajo concurrencia); misma `Idempotency-Key` en 8 procesos; líneas en orden inverso sin deadlocks; prueba de control sin `FOR UPDATE`.
+  - `tests/Feature/Dispensing/DispenseEdgeCasesTest.php` (13 casos) y 4 pruebas más en `DispensationApiTest.php`.
+  - Objetivo `test-concurrency` en `Makefile` y `make.ps1`. Supuestos S-38 y S-39.
+  - **Fix** en `StockService`: el saldo se actualiza con `UPDATE ... SET quantity = quantity ± n RETURNING quantity` en vez de `$stock->quantity -= n; save()`.
+- Qué decisión tomó y por qué:
+  - Procesos reales (no hilos ni mocks) para que cada solicitud tenga su conexión y los `FOR UPDATE` se bloqueen de verdad. Cada worker usa una prescripción distinta para que la única disputa sea el stock.
+  - Barrera con advisory lock en vez de `sleep`: arranque de Laravel (lento) **antes** de la barrera; todos salen a la vez y la prueba es determinista (resultados exactos, no "a veces").
+  - Prueba de control: el worker en modo `unsafe` cambia la gramática SQL de **su** conexión para quitar todos los `FOR UPDATE` y pausa tras cada lectura de `stocks`. No toca código de producción. Antes del fix, 5 procesos vendían la misma unidad y el stock quedaba en 0 (actualización perdida: cada uno escribía `quantity = 0`, el CHECK nunca veía un negativo). Con el UPDATE relativo, 1 sale y el resto lo frena el CHECK `stocks_quantity_non_negative`.
+  - Mutaciones verificadas a mano (y revertidas): quitar los `FOR UPDATE` en `StockService` hace fallar las pruebas de última unidad y de 2 lotes; bloquear por id de línea en vez de por `product_id` hace que PostgreSQL registre 17–19 deadlocks (la prueba lo detecta aunque el reintento de `DB::transaction` los recupere); calcular "hoy" en UTC hace fallar las pruebas de vencimiento en Bogotá.
+- Puntos que Daniel debe revisar/entender:
+  - Cómo funciona la barrera (`pg_advisory_lock` exclusivo en la prueba / `pg_advisory_lock_shared` en cada worker) y por qué la prueba no puede usar `RefreshDatabase` (los workers no verían datos sin confirmar y no habría contención real).
+  - Por qué el UPDATE relativo importa aunque exista `FOR UPDATE`: es lo que hace que el CHECK sea de verdad "la última línea de defensa".
+  - La prueba de deadlocks mira el **contador** de PostgreSQL: con `DB::transaction(fn, 3)` un deadlock se reintenta y la prueba pasaría igual si solo se miraran los resultados.
+  - Cobertura RN → archivo de prueba (para el README):
+    | RN | Pruebas |
+    |---|---|
+    | RN-01 | `Unit/FefoAllocatorTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (borde de medianoche en Bogotá) |
+    | RN-02 | `Unit/FefoAllocatorTest`, `Feature/Dispensing/DispenseServiceTest`, `Concurrency/DispenseConcurrencyTest` (FEFO con 10 procesos) |
+    | RN-03 | `Concurrency/DispenseConcurrencyTest`, `Feature/Database/InventoryConstraintsTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (atomicidad multi-línea) |
+    | RN-04 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Database/DispensingConstraintsTest`, `Feature/Api/DispensationApiTest` |
+    | RN-05 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Database/DispensingConstraintsTest`, `Feature/Api/DispensationApiTest` |
+    | RN-06 | `Feature/Database/InventoryConstraintsTest` (inmutabilidad), `Feature/Inventory/StockServiceTest`, `Concurrency/DispenseConcurrencyTest` (kardex = stock tras cada escenario) |
+    | RN-09 | `Feature/Dispensing/DispenseServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest`, `Feature/Api/DispensationApiTest`, `Concurrency/DispenseConcurrencyTest` (misma clave en 8 procesos) |
+- Riesgos o cosas que podrían estar mal:
+  - Las pruebas de concurrencia tardan unos 30 s porque cada worker arranca Laravel sobre el volumen montado de Docker en Windows; en CI (Linux) debería ser más rápido.
+  - El modo `unsafe` depende de que `Builder::lock()` pase por `compileLock()` de la gramática de PostgreSQL; si Laravel cambia eso, la prueba de control podría dejar de quitar los bloqueos (fallaría en la aserción de `CHECK_VIOLATION`, no pasaría en silencio).
+  - `DatabaseTruncation` + `afterEach` truncan todas las tablas de `fartmar_test`; si alguien agrega datos fijos de referencia por migración, habría que excluirlos.
+  - El replay de idempotencia devuelve la dispensación en su **estado actual** (p. ej. una pendiente que ya se autorizó vuelve como COMPLETADA), no una copia literal de la primera respuesta. Es razonable, pero conviene mencionarlo.
+
+### 2026-10-08 — Fase 2: revisión de seguridad de autenticación, dispensación e inventario
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - Revisión de `/api/v1` (auth, dispensations, stocks): Policies, Resources, login, usuarios inactivos, IDOR, errores, validación, logs y tokens. Hallazgos verificados con pruebas exploratorias antes de corregir.
+  - `app/Models/PersonalAccessToken.php`: rechaza tokens `id|secreto` con id que no cabe en `bigint`.
+  - `AppServiceProvider`: `Sanctum::authenticateAccessTokensUsing` (usuario inactivo = token inválido) y limitador `login` (5/min por correo + IP, 20/min por IP).
+  - `config/sanctum.php`: `expiration` = `SANCTUM_EXPIRATION` (480 min) y `guard = []` (solo Bearer). `LoginService` guarda `expires_at` en el token y el login lo devuelve. `sanctum:prune-expired` diario en `routes/console.php`.
+  - `routes/api.php`: patrón de id `[1-9][0-9]{0,17}` en vez de `whereNumber`.
+  - `ApiErrorRenderer`: `500 ERROR_INTERNO` sin detalles cuando `APP_DEBUG=false`; el 429 conserva `Retry-After`.
+  - `StoreDispensationRequest`: `items` debe ser lista y cada línea exactamente `{prescription_item_id, quantity}`; ids `min:1`. `IndexStockRequest`: ids `min:1`.
+  - `config/cors.php`: solo `CORS_ALLOWED_ORIGINS` (antes `*`).
+  - Pruebas: `tests/Feature/Security/{AuthHardeningTest,ApiHardeningTest,AuthorizationMatrixTest}.php` (matriz rol × endpoint con dataset cartesiano de Pest: 5 roles × 7 endpoints) y `tests/Unit/ArchitectureTest.php` (controladores sin `Role`, sin `dd`/`dump`). Supuestos S-36 (actualizado) y S-40…S-45. Pendientes en `docs/PROGRESO.md`.
+- Qué decisión tomó y por qué:
+  - **Hallazgos y severidad:**
+    - Alto (corregido): un token de un usuario desactivado seguía autenticando (`/auth/me` 200); las Policies frenaban la operación, pero no la autenticación.
+    - Alto (corregido): tokens sin expiración.
+    - Medio (corregido): `GET /dispensations/99999999999999999999` y el token `99999999999999999999|x` daban 500 con el SQL, host y BD en el cuerpo (con `APP_DEBUG=true`). El del token pasaba **antes** de autenticar.
+    - Medio (corregido): 500 no uniforme y dependiente solo de `APP_DEBUG`; CORS `*` por defecto; login limitado solo por IP; el 429 perdía `Retry-After` (el renderizador creaba una respuesta nueva sin los headers).
+    - Bajo (corregido): `items` aceptaba objetos y claves extra.
+    - Sin hallazgos: no hay `if` de rol en controladores (todo pasa por Policies/Form Requests), ningún Resource expone nombre/documento del paciente, el login responde idéntico para correo inexistente, clave mala o usuario inactivo, el SQL crudo (`applyDelta`, `selectRaw`) usa bindings, no hay `dd`/`dump` ni secretos en el código, `Idempotency-Key` ya validaba formato y longitud.
+  - El usuario inactivo se corta en el Guard de Sanctum (un solo lugar) y no con un middleware extra: así ninguna ruta nueva puede olvidarlo.
+  - La expiración se cuenta desde el login (no deslizante) porque Sanctum no renueva tokens; 480 min = un turno.
+  - Solo Bearer (S-40): elimina CSRF y simplifica; el riesgo de XSS se mitiga con expiración y CSP (Fase 7).
+  - `ERROR_INTERNO` solo con debug apagado, para no perder el detalle en desarrollo.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué un id enorme producía 500: `whereNumber` acepta cualquier cantidad de dígitos y PostgreSQL rechaza el valor al convertirlo a `bigint`. Lo mismo en `PersonalAccessToken::findToken` de Sanctum.
+  - La diferencia entre **autenticación** (Guard de Sanctum: ¿quién es y está activo?) y **autorización** (Policies: ¿su rol puede hacer esto?). Antes, el inactivo solo se frenaba en la segunda.
+  - Cómo leer `AuthorizationMatrixTest`: permitido = cualquier código distinto de 401/403 (el resultado de negocio se prueba en otros archivos). Hay que agregar cada endpoint nuevo ahí.
+  - Que con un único origen CORS el paquete siempre responde ese origen (no `null`); el navegador bloquea porque no coincide.
+- Riesgos o cosas que podrían estar mal:
+  - **Las excepciones de BD se registran con el SQL y sus valores** (se vio un INSERT de `users` con correo y hash): la redacción Monolog de la Fase 4 es necesaria antes de exponer pacientes por API.
+  - `APP_DEBUG=true` es el valor por defecto en compose; si alguien despliega así, los 500 vuelven a mostrar detalles. Se corrige en la imagen de producción (Fase 7).
+  - El limitador de login usa la caché por defecto; con varias réplicas debe ser una caché compartida (Redis/BD), no `array`/`file`.
+  - Detrás de un proxy (Nginx), `$request->ip()` será la del proxy si no se configuran `TrustProxies`: todo el tráfico compartiría el límite por IP (Fase 7).
+
+### 2026-10-08 — Correcciones de la revisión de Fase 2 (dominio)
+- Agente: backend-dominio (Claude Code)
+- Qué generó la IA:
+  - **M1** `app/Database/PostgresError.php` (lee SQLSTATE de `errorInfo[0]` y el nombre del constraint de la primera línea de `errorInfo[2]`) y `ApiErrorRenderer::databaseError`: CHECK `stocks_quantity_non_negative` → 409 `STOCK_INSUFICIENTE`; CHECK `prescription_items_dispensed_le_prescribed` → 422 `PRESCRIPCION_EXCEDIDA`; 40P01/40001 (tras los 3 intentos de `DB::transaction`) → 409 `CONFLICTO_CONCURRENCIA`. Aplica con o sin `APP_DEBUG`. Pruebas en `tests/Feature/Api/DatabaseErrorMappingTest.php`.
+  - **B2** `DispenseService::executeOutflow`: `increment('quantity_dispensed', n)` en vez de `+=` y `save()`.
+  - **B3** `IdempotencyGuard::isKeyCollision` usa `PostgresError` (23505 + `dispensations_idempotency_key_unique`), prueba con una violación real.
+  - **B4** `Idempotency-Key`: 8–100 caracteres `[A-Za-z0-9_-]` y mensaje que lo dice; S-29 y openapi actualizados.
+  - **B6** limitador `api` (120/min por usuario, `API_RATE_LIMIT_PER_MINUTE`) en el grupo `auth:sanctum`; S-47.
+  - **B1** supuesto S-46 (semántica del replay) y prueba que lo fija.
+  - **M2** modo `authorize` en `tests/Concurrency/bin/dispense-worker.php` y 4 pruebas de concurrencia real nuevas.
+- Qué decisión tomó y por qué:
+  - **M2 encontró un bug real:** 8 procesos pidiendo 1 sobre la MISMA prescripción daban OK=1 y 7 deadlocks (40P01). Flujo explicado simple: cada proceso (1) insertaba su dispensación, y ese INSERT, por la llave foránea, "marca" la prescripción en modo compartido (`FOR KEY SHARE`) para que nadie la borre; (2) luego pedía la prescripción en modo exclusivo (`FOR UPDATE`) para validar el saldo. El exclusivo espera a que los demás suelten su marca compartida, y los demás esperan lo mismo de él: nadie avanza. PostgreSQL mata a uno, Laravel reintenta 3 veces y al final falla. Las pruebas anteriores usaban una prescripción distinta por proceso y no lo veían.
+  - **Corrección:** al crear, primero se bloquea la prescripción (la fila de espera es una sola) y después se inserta la dispensación. Al cambiar el orden apareció un segundo caso: dos reintentos con la misma clave pidiendo TODO el saldo; el segundo, al obtener el bloqueo, veía el saldo en 0 y respondía error en vez del replay. Por eso se vuelve a buscar la `Idempotency-Key` justo después de tomar el bloqueo. Hay prueba de concurrencia para cada caso y se comprobó que ambas fallan sin la corrección.
+  - El revisor esperaba `PRESCRIPCION_EXCEDIDA=3` con una prescripción de una línea, pero al llegar a 5/5 la prescripción pasa a `COMPLETADA` (S-33) y los demás reciben `PRESCRIPCION_NO_VIGENTE` (S-39). Se dejaron dos pruebas: con una segunda línea pendiente (la prescripción sigue ACTIVA → `EXCEDIDA=3`) y con una sola línea (`NO_VIGENTE=3`).
+  - El constraint se lee de `errorInfo[2]` y no de `getMessage()`, porque este último incluye el SQL y los valores; una prueba pone el nombre de otro constraint en un comentario SQL y verifica que no confunde.
+  - B2: con `+=` y `save()` se escribe el valor calculado en PHP; si algo se saltara el bloqueo se perderían entregas sin que el CHECK lo note (la prueba lo demuestra: sin el cambio responde 201 y borra 5 unidades entregadas).
+  - B4: se mantuvo el formato flexible (no solo UUID) para no romper clientes, pero sin `:` ni `.`.
+- Puntos que Daniel debe revisar/entender:
+  - Que un INSERT con FK bloquea (en modo compartido) la fila referenciada, y por qué eso + `FOR UPDATE` posterior sobre la misma fila produce deadlock. El nuevo orden está en el docblock de `DispenseService`.
+  - Que autorizar bloquea primero la dispensación y luego la prescripción; no choca con "crear" porque crear nunca bloquea una dispensación existente.
+  - La doble revisión de idempotencia en `createInTransaction` (paso 1 rápido sin bloqueo, paso 4 con bloqueo) y el `catch` del UNIQUE en `create()` (misma clave con otra prescripción).
+  - S-46: el replay devuelve el estado ACTUAL, no el cuerpo original.
+- Riesgos o cosas que podrían estar mal:
+  - `PostgresError::constraint` depende de que `lc_messages` esté en inglés (por defecto en `postgres:16-alpine`); con otro idioma, el CHECK vuelve a ser 500 (nunca un código de negocio equivocado).
+  - El bloqueo de la prescripción serializa TODAS las dispensaciones de una misma prescripción (correcto y barato: son pocas por paciente), pero también las de reintentos con la misma clave.
+  - El límite de 120/min usa la caché por defecto; con varias réplicas debe ser compartida.
+
