@@ -12,9 +12,11 @@
 |
 | JSON de entrada:
 |   mode: "create" (por defecto) | "authorize"
+|         | "transfer-approve" | "transfer-dispatch" | "transfer-cancel"
 |   create:    user_id, patient_id, prescription_id, warehouse_id,
 |              items: [[prescription_item_id, quantity], ...], idempotency_key
 |   authorize: user_id (regente), dispensation_id
+|   transfer-*: user_id, transfer_id (transfer-cancel: reason)
 |   barrier (int, clave del advisory lock), unsafe (bool, opcional)
 |
 | Pasos:
@@ -22,7 +24,8 @@
 |   2. Espera en la barrera: pg_advisory_lock_shared(barrier). La prueba tiene
 |      ese lock en modo exclusivo y lo suelta cuando TODOS los workers están
 |      esperando, así arrancan prácticamente a la vez.
-|   3. Llama a DispenseService::create o ::authorize (código real de producción).
+|   3. Llama a DispenseService::create / ::authorize o a TransferService
+|      (código real de producción).
 |   4. Imprime UNA línea JSON con el resultado y termina con código 0.
 |      Solo un error inesperado (no de negocio ni CHECK) termina con código 1.
 |
@@ -37,7 +40,9 @@ use App\Domain\Dispensing\DispenseData;
 use App\Domain\Dispensing\DispenseItemData;
 use App\Domain\Dispensing\DispenseService;
 use App\Domain\Exceptions\BusinessRuleException;
+use App\Domain\Transfers\TransferService;
 use App\Models\Dispensation;
+use App\Models\Transfer;
 use App\Models\User;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Database\Connection;
@@ -65,7 +70,7 @@ if (! str_ends_with($database, '_test')) {
     respond(['outcome' => 'UNEXPECTED', 'message' => "El worker solo corre contra una BD *_test (recibió {$database})."], 2);
 }
 
-/** @var array{mode?: string, user_id: int, patient_id?: int, prescription_id?: int, warehouse_id?: int, items?: list<array{0: int, 1: int}>, idempotency_key?: string, dispensation_id?: int, barrier: int, unsafe?: bool} $job */
+/** @var array{mode?: string, user_id: int, patient_id?: int, prescription_id?: int, warehouse_id?: int, items?: list<array{0: int, 1: int}>, idempotency_key?: string, dispensation_id?: int, transfer_id?: int, reason?: string, barrier: int, unsafe?: bool} $job */
 $job = json_decode($argv[1] ?? '', true, flags: JSON_THROW_ON_ERROR);
 
 /** @var Connection $connection */
@@ -91,7 +96,22 @@ if ($job['unsafe'] ?? false) {
 $user = User::query()->findOrFail($job['user_id']);
 
 // Lo que lee la BD se prepara ANTES de la barrera; después solo corre la acción.
-if (($job['mode'] ?? 'create') === 'authorize') {
+$mode = $job['mode'] ?? 'create';
+
+if (str_starts_with($mode, 'transfer-')) {
+    $transfer = Transfer::query()->findOrFail($job['transfer_id']);
+    $service = app(TransferService::class);
+    $action = function () use ($mode, $service, $transfer, $user, $job): array {
+        $done = match ($mode) {
+            'transfer-approve' => $service->approve($transfer, $user),
+            'transfer-dispatch' => $service->dispatch($transfer, $user),
+            'transfer-cancel' => $service->cancel($transfer, $user, $job['reason'] ?? 'Anulado en prueba de concurrencia'),
+            default => throw new InvalidArgumentException("Modo desconocido: {$mode}"),
+        };
+
+        return ['transfer_id' => $done->id, 'status' => $done->status->value];
+    };
+} elseif ($mode === 'authorize') {
     $dispensation = Dispensation::query()->findOrFail($job['dispensation_id']);
     $action = fn (): array => ['dispensation_id' => app(DispenseService::class)->authorize($dispensation, $user)->id];
 } else {
