@@ -41,6 +41,10 @@ function authorizationEndpoints(): array
 
     return [
         'GET auth/me' => [Role::cases(), fn () => test()->getJson('/api/v1/auth/me')],
+        // S-77: cualquier usuario cambia SU contraseña (la de la factory es "password").
+        'POST auth/password' => [Role::cases(), fn () => test()->postJson('/api/v1/auth/password', [
+            'current_password' => 'password', 'password' => 'ClaveNueva2026', 'password_confirmation' => 'ClaveNueva2026',
+        ])],
         'GET stocks' => [[...$pharmacy, Role::Auditor], fn () => test()->getJson('/api/v1/stocks')],
         'GET stocks/in-transit' => [[...$pharmacy, Role::Auditor], fn () => test()->getJson('/api/v1/stocks/in-transit')],
         'GET dispensations/preview' => [$pharmacy, fn (DispensingScenario $s) => test()->getJson(

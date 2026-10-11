@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Auth\LoginService;
+use App\Domain\Auth\UserManagementService;
+use App\Http\Requests\ChangePasswordRequest;
 use App\Http\Requests\LoginRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
@@ -35,6 +37,15 @@ class AuthController extends Controller
         $this->auth->logout($this->currentUser($request));
 
         return response()->noContent();
+    }
+
+    /** S-77: cambia la propia contraseña y quita must_change_password. */
+    public function changePassword(ChangePasswordRequest $request, UserManagementService $users): UserResource
+    {
+        return new UserResource($users->changeOwnPassword(
+            $this->currentUser($request),
+            $request->string('password')->toString(),
+        ));
     }
 
     public function me(Request $request): UserResource

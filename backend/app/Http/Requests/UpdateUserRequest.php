@@ -10,11 +10,15 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
 
 /**
- * PATCH /api/v1/users/{user} (solo admin): nombre, rol y activo/inactivo.
- * El correo y la contraseña no se cambian por aquí.
+ * PATCH /api/v1/users/{user} (solo admin): nombre, rol, activo/inactivo y
+ * restablecer la contraseña ("password"). Una contraseña restablecida es
+ * temporal: el usuario debe cambiarla al entrar (S-77). El correo no se
+ * cambia por aquí.
  */
 class UpdateUserRequest extends FormRequest
 {
+    private const FIELDS = ['name', 'role', 'is_active', 'password'];
+
     public function authorize(): bool
     {
         $target = $this->route('user');
@@ -31,6 +35,7 @@ class UpdateUserRequest extends FormRequest
             'name' => ['sometimes', 'string', 'min:3', 'max:120'],
             'role' => ['sometimes', 'string', Rule::enum(Role::class)],
             'is_active' => ['sometimes', 'boolean'],
+            'password' => ['sometimes', ...PasswordRules::newPassword()],
         ];
     }
 
@@ -41,15 +46,15 @@ class UpdateUserRequest extends FormRequest
     {
         return [
             function (Validator $validator): void {
-                if (array_intersect(array_keys($this->all()), ['name', 'role', 'is_active']) === []) {
-                    $validator->errors()->add('name', 'Envíe al menos uno de: name, role, is_active.');
+                if (array_intersect(array_keys($this->all()), self::FIELDS) === []) {
+                    $validator->errors()->add('name', 'Envíe al menos uno de: name, role, is_active, password.');
                 }
             },
         ];
     }
 
     /**
-     * @return array{name?: string, role?: Role, is_active?: bool}
+     * @return array{name?: string, role?: Role, is_active?: bool, password?: string}
      */
     public function changes(): array
     {
@@ -62,6 +67,9 @@ class UpdateUserRequest extends FormRequest
         }
         if ($this->has('is_active')) {
             $changes['is_active'] = $this->boolean('is_active');
+        }
+        if ($this->has('password')) {
+            $changes['password'] = $this->string('password')->toString();
         }
 
         return $changes;

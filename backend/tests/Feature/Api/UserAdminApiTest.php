@@ -33,7 +33,7 @@ it('el admin lista usuarios sin contraseñas ni tokens', function () {
         ->assertJsonCount(4, 'data')
         ->assertJsonStructure(['data' => [['id', 'name', 'email', 'role', 'is_active']], 'meta' => ['total']]);
 
-    expect((string) $response->getContent())->not->toContain('password')->not->toContain('$2y$')->not->toContain('remember_token');
+    expect((string) $response->getContent())->not->toContain('"password"')->not->toContain('$2y$')->not->toContain('remember_token');
 });
 
 it('el admin crea un usuario con clave hasheada y queda auditado sin la clave', function () {
@@ -47,6 +47,7 @@ it('el admin crea un usuario con clave hasheada y queda auditado sin la clave', 
         ->assertJsonPath('data.email', 'nueva.aux@fartmar.test')
         ->assertJsonPath('data.role', 'auxiliar_farmacia')
         ->assertJsonPath('data.is_active', true)
+        ->assertJsonPath('data.must_change_password', true) // S-77: clave temporal
         ->assertJsonMissingPath('data.password');
 
     $user = User::query()->findOrFail($response->json('data.id'));
@@ -168,17 +169,49 @@ it('un admin sí puede cambiarse el nombre y desactivar a otro admin', function 
     $this->patchJson("/api/v1/users/{$other->id}", ['is_active' => false])->assertOk();
 });
 
-it('PATCH valida: al menos un campo, rol de la lista y no permite cambiar correo ni clave', function () {
+it('PATCH valida: al menos un campo, rol de la lista y no permite cambiar el correo', function () {
     $admin = User::factory()->admin()->create();
     $user = User::factory()->create(['email' => 'fijo@fartmar.test']);
     Sanctum::actingAs($admin);
 
     $this->patchJson("/api/v1/users/{$user->id}", [])->assertUnprocessable();
     $this->patchJson("/api/v1/users/{$user->id}", ['role' => 'root'])->assertUnprocessable();
-    $this->patchJson("/api/v1/users/{$user->id}", ['email' => 'otro@fartmar.test', 'password' => 'NuevaClave2026', 'name' => 'Ok Nombre'])->assertOk();
+    $this->patchJson("/api/v1/users/{$user->id}", ['password' => 'corta1'])->assertUnprocessable();
+    $this->patchJson("/api/v1/users/{$user->id}", ['email' => 'otro@fartmar.test', 'name' => 'Ok Nombre'])->assertOk();
 
     expect($user->fresh()?->email)->toBe('fijo@fartmar.test')
         ->and(Hash::check('password', (string) $user->fresh()?->password))->toBeTrue();
+});
+
+it('S-77: el admin restablece la contraseña: queda temporal, revoca tokens y se audita sin la clave', function () {
+    $admin = User::factory()->admin()->create();
+    $user = User::factory()->medico()->create(['email' => 'olvido@fartmar.test']);
+    adminTestLogin('olvido@fartmar.test');
+    Sanctum::actingAs($admin);
+
+    $this->patchJson("/api/v1/users/{$user->id}", ['password' => 'TemporalNueva2026'])
+        ->assertOk()
+        ->assertJsonPath('data.must_change_password', true);
+
+    $fresh = $user->fresh();
+    expect(Hash::check('TemporalNueva2026', (string) $fresh?->password))->toBeTrue()
+        ->and($fresh?->must_change_password)->toBeTrue()
+        ->and($user->tokens()->count())->toBe(0);
+
+    $audit = AuditLog::query()->where('action', 'user.password_reset')->sole();
+    expect($audit->user_id)->toBe($admin->id)
+        ->and($audit->metadata['tokens_revoked'])->toBe(1)
+        ->and($audit->metadata['changed'])->toContain('password')
+        ->and(json_encode($audit->metadata))->not->toContain('TemporalNueva2026')->not->toContain('$2y$');
+});
+
+it('B3: una contraseña de más de 72 bytes se rechaza aunque tenga menos de 72 caracteres', function () {
+    Sanctum::actingAs(User::factory()->admin()->create());
+
+    // 40 "ñ" (2 bytes cada una) + "abc123" = 86 bytes y 46 caracteres.
+    $this->postJson('/api/v1/users', [
+        'name' => 'Clave Larga', 'email' => 'larga@fartmar.test', 'password' => str_repeat('ñ', 40).'abc123', 'role' => 'auditor',
+    ])->assertUnprocessable()->assertJsonValidationErrors('password', 'error.details.fields');
 });
 
 it('no existe DELETE de usuarios', function () {

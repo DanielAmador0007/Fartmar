@@ -6,7 +6,6 @@ use App\Enums\Role;
 use App\Models\User;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
 
 /**
  * POST /api/v1/users (solo admin). El correo se normaliza a minúsculas
@@ -34,8 +33,8 @@ class StoreUserRequest extends FormRequest
         return [
             'name' => ['required', 'string', 'min:3', 'max:120'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
-            // S-72: mínimo 12 caracteres con letras y números.
-            'password' => ['required', 'string', 'max:255', Password::min(12)->letters()->numbers()],
+            // S-72/S-77: contraseña temporal; el usuario debe cambiarla al entrar.
+            'password' => PasswordRules::newPassword(),
             'role' => ['required', 'string', Rule::enum(Role::class)],
         ];
     }

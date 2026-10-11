@@ -22,6 +22,8 @@ class UserResource extends JsonResource
             'email' => $this->email,
             'role' => $this->role->value,
             'is_active' => $this->is_active,
+            // S-77: el frontend debe llevar a "cambiar contraseña" si es true.
+            'must_change_password' => (bool) $this->must_change_password,
         ];
     }
 }

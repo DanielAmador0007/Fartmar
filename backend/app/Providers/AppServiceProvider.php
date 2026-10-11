@@ -74,6 +74,11 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('api', fn (Request $request): Limit => Limit::perMinute((int) config('fartmar.api_rate_limit_per_minute', 120))
             ->by('api:'.($request->user()?->getAuthIdentifier() ?? $request->ip())));
 
+        // Cambio de contraseña (S-77): 5 por minuto por usuario; frena probar la
+        // contraseña actual con un token robado.
+        RateLimiter::for('password', fn (Request $request): Limit => Limit::perMinute(5)
+            ->by('password:'.($request->user()?->getAuthIdentifier() ?? $request->ip())));
+
         // Login: 5 intentos por minuto por correo + IP (fuerza bruta sobre una
         // cuenta) y 20 por minuto por IP (barrido de muchas cuentas).
         RateLimiter::for('login', function (Request $request): array {

@@ -15,6 +15,7 @@ use Laravel\Sanctum\HasApiTokens;
  * @property string $email
  * @property Role $role
  * @property bool $is_active
+ * @property bool $must_change_password Contraseña temporal asignada por el admin (S-77).
  */
 class User extends Authenticatable
 {
@@ -28,6 +29,7 @@ class User extends Authenticatable
         'password',
         'role',
         'is_active',
+        'must_change_password',
     ];
 
     /** @var list<string> */
@@ -46,6 +48,7 @@ class User extends Authenticatable
             'password' => 'hashed',
             'role' => Role::class,
             'is_active' => 'boolean',
+            'must_change_password' => 'boolean',
         ];
     }
 

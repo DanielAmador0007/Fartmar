@@ -11,6 +11,7 @@ use App\Http\Controllers\StockController;
 use App\Http\Controllers\TransferController;
 use App\Http\Controllers\TransferDiscrepancyController;
 use App\Http\Controllers\UserController;
+use App\Http\Middleware\EnsurePasswordIsChanged;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -33,9 +34,15 @@ Route::prefix('v1')->group(function (): void {
         ->name('auth.login');
 
     // auth:sanctum primero para que el límite "api" cuente por usuario.
-    Route::middleware(['auth:sanctum', 'throttle:api'])->group(function (): void {
+    // EnsurePasswordIsChanged: con contraseña temporal solo auth/password,
+    // auth/me y auth/logout (S-77).
+    Route::middleware(['auth:sanctum', 'throttle:api', EnsurePasswordIsChanged::class])->group(function (): void {
         Route::post('auth/logout', [AuthController::class, 'logout'])->name('auth.logout');
         Route::get('auth/me', [AuthController::class, 'me'])->name('auth.me');
+        // Limitador "password": 5/min por usuario (adivinar la clave actual con un token robado).
+        Route::post('auth/password', [AuthController::class, 'changePassword'])
+            ->middleware('throttle:password')
+            ->name('auth.password');
 
         // Dispensación (RN-01..RN-06, RN-09). "preview" va antes de {dispensation}.
         Route::get('dispensations/preview', [DispensationController::class, 'preview'])->name('dispensations.preview');
