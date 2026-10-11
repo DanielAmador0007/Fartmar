@@ -29,6 +29,18 @@ final class SegregationOfDutiesException extends BusinessRuleException
         );
     }
 
+    /**
+     * M5: quien recibió el traslado (y declaró el faltante) no resuelve la
+     * discrepancia que generó su propia recepción.
+     */
+    public static function receiverCannotResolve(): self
+    {
+        return new self(
+            'Usted recibió este traslado; la discrepancia debe resolverla otro regente de farmacia.',
+            ['reason' => 'ES_RECEPTOR'],
+        );
+    }
+
     public static function roleRequired(string $action, string $role): self
     {
         return new self(

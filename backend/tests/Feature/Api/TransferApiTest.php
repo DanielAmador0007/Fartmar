@@ -304,3 +304,24 @@ it('ids de ruta fuera de rango responden 404 (no 500)', function () {
     test()->postJson('/api/v1/transfer-discrepancies/99999999999999999999/resolve')->assertNotFound();
     test()->getJson('/api/v1/transfers/0')->assertNotFound();
 });
+
+it('M5 por HTTP: el regente que recibió no resuelve la discrepancia (403 SEGREGACION_FUNCIONES)', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = $s->dispatched(5);
+
+    Sanctum::actingAs($s->regente);
+    test()->postJson("/api/v1/transfers/{$transfer->id}/receive", ['lots' => [
+        ['transfer_item_lot_id' => TransferItemLot::query()->sole()->id, 'quantity_received' => 3],
+    ]])->assertOk();
+
+    $discrepancyId = TransferDiscrepancy::query()->sole()->id;
+    test()->postJson("/api/v1/transfer-discrepancies/{$discrepancyId}/resolve", ['action' => 'PERDIDA', 'resolution' => 'Caja rota'])
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'SEGREGACION_FUNCIONES')
+        ->assertJsonPath('error.details.reason', 'ES_RECEPTOR');
+
+    Sanctum::actingAs($s->regente2);
+    test()->postJson("/api/v1/transfer-discrepancies/{$discrepancyId}/resolve", ['action' => 'PERDIDA', 'resolution' => 'Caja rota'])
+        ->assertOk()
+        ->assertJsonPath('data.resolved_by.id', $s->regente2->id);
+});

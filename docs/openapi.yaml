@@ -526,7 +526,9 @@ paths:
       summary: Resolver una discrepancia (solo regente)
       description: |
         `REINTEGRAR_ORIGEN`: las unidades vuelven a la bodega origen con un movimiento `AJUSTE` (+) cuyo motivo cita
-        la discrepancia. `PERDIDA`: solo se registra (el stock ya salió del origen). Una sola vez (S-50).
+        la discrepancia. `PERDIDA`: solo se registra (el stock ya salió del origen). Una sola vez (S-50); una vez
+        RESUELTA la BD no permite cambiarla. Quien **recibió** el traslado no puede resolver su discrepancia (S-60;
+        también lo exige un trigger en BD).
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
       requestBody:
@@ -549,7 +551,11 @@ paths:
                 properties:
                   data: { $ref: '#/components/schemas/TransferDiscrepancy' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: '`NO_AUTORIZADO` (rol) o `SEGREGACION_FUNCIONES` (`details.reason = ES_RECEPTOR`: quien recibió el traslado intenta resolver)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: '`TRANSICION_INVALIDA` (ya estaba resuelta)'

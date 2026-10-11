@@ -428,7 +428,8 @@ it('la BD exige que quien resuelve sea regente y que RESUELTA traiga acción', f
     $id = TransferDiscrepancy::query()->sole()->id;
 
     expectDbRejects(fn () => DB::table('transfer_discrepancies')->where('id', $id)->update([
-        'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA', 'resolution' => 'x', 'resolved_by' => $s->auxiliar->id, 'resolved_at' => now(),
+        // Otro auxiliar (no quien recibió): así lo frena el trigger de rol.
+        'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA', 'resolution' => 'x', 'resolved_by' => User::factory()->auxiliar()->create()->id, 'resolved_at' => now(),
     ]), 'debe tener rol regente_farmacia');
 
     expectDbRejects(fn () => DB::table('transfer_discrepancies')->where('id', $id)->update([
@@ -438,4 +439,44 @@ it('la BD exige que quien resuelve sea regente y que RESUELTA traiga acción', f
     expectDbRejects(fn () => DB::table('transfer_discrepancies')->where('id', $id)->update([
         'status' => 'RESUELTA', 'resolution_action' => 'OTRA', 'resolution' => 'x', 'resolved_by' => $s->regente->id, 'resolved_at' => now(),
     ]), 'transfer_discrepancies_resolution_action_check');
+});
+
+it('M5: quien recibió el traslado no resuelve su discrepancia (SEGREGACION_FUNCIONES); otro regente sí', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = $s->dispatched(5);
+    // Recibe un regente (también puede recibir, S-52) y declara 2 faltantes.
+    transfers()->receive($transfer, $s->regente, [TransferItemLot::query()->sole()->id => 3]);
+    $discrepancy = TransferDiscrepancy::query()->sole();
+
+    try {
+        transfers()->resolveDiscrepancy($discrepancy, $s->regente, DiscrepancyResolution::ReintegrarOrigen, 'Quedaron en origen');
+        test()->fail('Debía rechazar al receptor.');
+    } catch (SegregationOfDutiesException $e) {
+        expect($e->details()['reason'])->toBe('ES_RECEPTOR')
+            ->and($e->httpStatus())->toBe(403);
+    }
+
+    // Nada cambió: sigue pendiente y no hubo AJUSTE.
+    expect($discrepancy->fresh()?->status)->toBe(DiscrepancyStatus::Pendiente)
+        ->and(KardexMovement::query()->where('type', KardexType::Ajuste)->count())->toBe(0)
+        ->and($s->stockAt($s->origin, $s->lots[0]))->toBe(5);
+
+    expect(transfers()->resolveDiscrepancy($discrepancy, $s->regente2, DiscrepancyResolution::ReintegrarOrigen, 'Quedaron en origen')->status)
+        ->toBe(DiscrepancyStatus::Resuelta);
+});
+
+it('M5: la BD rechaza que quien recibió resuelva la discrepancia (trigger)', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = $s->dispatched(5);
+    transfers()->receive($transfer, $s->regente, [TransferItemLot::query()->sole()->id => 4]);
+    $id = TransferDiscrepancy::query()->sole()->id;
+
+    expectDbRejects(fn () => DB::table('transfer_discrepancies')->where('id', $id)->update([
+        'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA', 'resolution' => 'Rota', 'resolved_by' => $s->regente->id, 'resolved_at' => now(),
+    ]), 'transfer_discrepancies_check_resolver');
+
+    DB::table('transfer_discrepancies')->where('id', $id)->update([
+        'status' => 'RESUELTA', 'resolution_action' => 'PERDIDA', 'resolution' => 'Rota', 'resolved_by' => $s->regente2->id, 'resolved_at' => now(),
+    ]);
+    expect(DB::table('transfer_discrepancies')->where('id', $id)->value('status'))->toBe('RESUELTA');
 });

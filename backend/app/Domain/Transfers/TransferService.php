@@ -282,7 +282,8 @@ final class TransferService
     }
 
     /**
-     * Un regente cierra una discrepancia PENDIENTE (S-50):
+     * Un regente DISTINTO de quien recibió el traslado (M5, S-60) cierra una
+     * discrepancia PENDIENTE (S-50):
      * - REINTEGRAR_ORIGEN: lo faltante vuelve a la bodega origen con un
      *   AJUSTE (+) cuyo motivo cita la discrepancia y el traslado.
      * - PERDIDA: solo se registra; el stock ya salió del origen al despachar.
@@ -311,6 +312,11 @@ final class TransferService
             }
 
             $this->assertActiveRegente($regente, 'resolver discrepancias de traslado');
+
+            // M5: quien declaró el faltante al recibir no lo resuelve (trigger en BD también).
+            if ($regente->id === $transfer->received_by) {
+                throw SegregationOfDutiesException::receiverCannotResolve();
+            }
 
             if ($action === DiscrepancyResolution::ReintegrarOrigen) {
                 $this->stocks->increase(
