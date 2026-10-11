@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\DispensingScenario;
+use Tests\Support\TransferScenario;
 
 uses(RefreshDatabase::class);
 
@@ -164,3 +165,37 @@ it('el mapeo de errores de la BD aplica también con APP_DEBUG=true', function (
         ->assertStatus(409)
         ->assertJsonPath('error.code', 'STOCK_INSUFICIENTE');
 });
+
+/*
+| Fase 4: triggers de traslados (Fase 3) con código de negocio en vez de 500.
+*/
+
+it('un trigger de transición de traslado por un camino real responde 409 TRANSICION_INVALIDA', function () {
+    $transfer = TransferScenario::make()->requested();
+    Route::middleware('api')->post('/api/v1/_prueba/salto', fn () => DB::transaction(
+        fn () => DB::update("update transfers set status = 'RECIBIDO' where id = ?", [$transfer->id]),
+    ));
+
+    $this->postJson('/api/v1/_prueba/salto')
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'TRANSICION_INVALIDA')
+        ->assertJsonPath('error.details', []);
+
+    expect($transfer->fresh()?->status->value)->toBe('SOLICITADO');
+});
+
+it('mapea los demás triggers de traslados conocidos y deja como 500 los que indican un bug', function (string $serverMessage, int $status, string $code) {
+    Route::middleware('api')->post('/api/v1/_prueba/trigger', fn () => throw pgQueryException('23514', $serverMessage, 'update "transfers" set "status" = ?'));
+
+    $this->postJson('/api/v1/_prueba/trigger')
+        ->assertStatus($status)
+        ->assertJsonPath('error.code', $code);
+})->with([
+    'líneas fuera de borrador' => ['ERROR:  transfer_items_only_in_draft: las líneas del traslado 1 solo se modifican en BORRADOR (estado APROBADO)', 409, 'TRANSICION_INVALIDA'],
+    'lote despachado congelado' => ['ERROR:  transfer_item_lots_freeze: lo despachado en el lote de traslado 1 no se puede modificar', 409, 'TRANSICION_INVALIDA'],
+    'discrepancia resuelta' => ['ERROR:  transfer_discrepancies_freeze_resolved: la discrepancia 1 ya está resuelta y no se puede modificar', 409, 'TRANSICION_INVALIDA'],
+    'receptor resuelve' => ['ERROR:  transfer_discrepancies_check_resolver: quien recibió el traslado (usuario 3) no puede resolver su discrepancia', 403, 'SEGREGACION_FUNCIONES'],
+    'lote vencido' => ['ERROR:  transfer_item_lots_check_lot: el lote 4 venció el 2026-01-01 y no se puede trasladar (RN-01)', 422, 'LOTE_VENCIDO'],
+    'saldo de kardex (bug)' => ['ERROR:  kardex_movements_check_balance: balance_after 3 no coincide con la existencia actual 4 (bodega 1, lote 2)', 500, 'ERROR_INTERNO'],
+    'prefijo solo en el SQL, no en el servidor' => ['ERROR:  new row for relation "x" violates check constraint "y"', 500, 'ERROR_INTERNO'],
+]);

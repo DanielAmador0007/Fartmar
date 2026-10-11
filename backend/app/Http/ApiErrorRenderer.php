@@ -118,6 +118,30 @@ final class ApiErrorRenderer
                 'AJUSTE_INVALIDO',
                 'Todo ajuste de inventario necesita un motivo.',
             ),
+            // Triggers de traslados (Fase 3). El servicio valida antes con su error
+            // específico; si la BD los dispara es porque el traslado cambió por
+            // otro camino. Los demás triggers (saldo de kardex, faltante) indican
+            // un bug y siguen como 500.
+            in_array(PostgresError::triggerGuard($e), [
+                'transfers_check_transition',
+                'transfer_items_only_in_draft',
+                'transfer_item_lots_freeze',
+                'transfer_discrepancies_freeze_resolved',
+            ], true) => self::error(
+                409,
+                'TRANSICION_INVALIDA',
+                'El traslado ya no está en un estado que permita esta acción. Actualice la pantalla e intente de nuevo.',
+            ),
+            PostgresError::triggerGuard($e) === 'transfer_discrepancies_check_resolver' => self::error(
+                403,
+                'SEGREGACION_FUNCIONES',
+                'Usted recibió este traslado; la discrepancia debe resolverla otro regente de farmacia.',
+            ),
+            PostgresError::triggerGuard($e) === 'transfer_item_lots_check_lot' => self::error(
+                422,
+                'LOTE_VENCIDO',
+                'Un lote vencido no se puede trasladar (RN-01).',
+            ),
             // DB::transaction(..., 3) ya reintentó y se agotaron los intentos.
             PostgresError::isConcurrencyFailure($e) => self::error(
                 409,
