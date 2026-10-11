@@ -7,6 +7,7 @@
 */
 
 use App\Logging\RedactSensitiveData;
+use App\Logging\UseRedaction;
 use App\Models\AuditLog;
 use App\Models\Dispensation;
 use App\Models\KardexMovement;
@@ -19,6 +20,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
+use Monolog\Handler\NullHandler;
 use Tests\Support\DispensingScenario;
 use Tests\Support\LogCapture;
 
@@ -72,6 +74,21 @@ it('la dispensación guarda el correlation_id en dispensations y kardex, y corre
 });
 
 // --- Redacción ----------------------------------------------------------------
+
+it('todo canal de log que escribe tiene el tap de redacción (M1)', function () {
+    // stack solo reenvía a otros canales; null no escribe; emergency no admite taps (S-73).
+    $exempt = ['stack', 'null', 'emergency'];
+
+    foreach (config('logging.channels') as $name => $channel) {
+        if (in_array($name, $exempt, true)) {
+            continue;
+        }
+        expect(in_array(UseRedaction::class, $channel['tap'] ?? [], true))->toBeTrue("El canal {$name} no redacta datos personales.");
+    }
+
+    expect(config('logging.channels.stack.driver'))->toBe('stack')
+        ->and(config('logging.channels.null.handler'))->toBe(NullHandler::class);
+});
 
 it('un 500 por QueryException no deja en el log el correo, el hash de la clave ni la línea DETAIL', function () {
     config(['app.debug' => false]);

@@ -91,6 +91,7 @@ return [
 
         'slack' => [
             'driver' => 'slack',
+            'tap' => [UseRedaction::class],
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
             'username' => env('LOG_SLACK_USERNAME', env('APP_NAME', 'Laravel')),
             'emoji' => env('LOG_SLACK_EMOJI', ':boom:'),
@@ -100,6 +101,7 @@ return [
 
         'papertrail' => [
             'driver' => 'monolog',
+            'tap' => [UseRedaction::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'handler' => env('LOG_PAPERTRAIL_HANDLER', SyslogUdpHandler::class),
             'handler_with' => [
@@ -138,6 +140,7 @@ return [
 
         'syslog' => [
             'driver' => 'syslog',
+            'tap' => [UseRedaction::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'facility' => env('LOG_SYSLOG_FACILITY', LOG_USER),
             'replace_placeholders' => true,
@@ -145,6 +148,7 @@ return [
 
         'errorlog' => [
             'driver' => 'errorlog',
+            'tap' => [UseRedaction::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],
@@ -154,6 +158,9 @@ return [
             'handler' => NullHandler::class,
         ],
 
+        // Lo usa Laravel solo si un canal configurado no se puede crear (error
+        // de configuración); construye su propio Monolog sin taps, así que no
+        // pasa por la redacción. Riesgo aceptado (S-73).
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],
