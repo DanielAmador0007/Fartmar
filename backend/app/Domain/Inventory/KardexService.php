@@ -13,6 +13,8 @@ use Illuminate\Support\Facades\Context;
  * Escribe movimientos de kardex (RN-06). Solo lo llama StockService, justo
  * después de cambiar la fila de stocks que tiene bloqueada, de modo que
  * balance_after es el saldo real del lote en la bodega tras el movimiento.
+ * La BD lo vuelve a exigir: el trigger kardex_movements_check_balance
+ * rechaza un movimiento cuyo balance_after no sea stocks.quantity actual.
  *
  * Los movimientos son inmutables (trigger en BD): nunca se editan ni borran.
  */

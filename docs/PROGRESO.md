@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-08, al cerrar la Fase 2.
+> Última actualización: 2026-10-11, al cerrar la Fase 3.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -23,9 +23,9 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 |---|---|---|
 | 0 Andamiaje | ✅ Hecha | Laravel 13.35 / PHP 8.4, Vite 8 + React 19, compose `fartmar`, CI, `/health` `/ready` |
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
-| 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR `feat/fase-2-dispensacion`) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
-| 3 Traslados, ajustes, alertas | ⏭️ **Siguiente** | backend-dominio → qa-tester; reutilizar `StockService` (ya admite salida/entrada de traslado y `AJUSTE`) y `ConcurrentDispenser` |
-| 4 Seguridad y privacidad | Pendiente | |
+| 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR #1, mergeado) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
+| 3 Traslados, ajustes, alertas | ✅ Hecha (PR `feat/fase-3-traslados`) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
+| 4 Seguridad y privacidad | ⏭️ **Siguiente** | seguridad-privacidad; ver "Pendientes de seguridad" abajo |
 | 5 Frontend | Pendiente | |
 | 6 Asistente IA | Pendiente | |
 | 7 DevOps completo | Pendiente | |
@@ -49,7 +49,29 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
 
-## Lo que la Fase 3 debe saber de la Fase 2
+## Lo que las fases siguientes deben saber de la Fase 3
+
+- Traslados: `TransferService` bloquea primero la fila del traslado (`lockForTransition`), valida con
+  `TransferStateMachine` y luego mueve stock vía `StockService`. Despacho todo o nada (S-54); recepción única con
+  todos los lotes (S-55); faltantes → `transfer_discrepancies` que resuelve un regente distinto del receptor
+  (`REINTEGRAR_ORIGEN` = AJUSTE + en origen, `PERDIDA` = sin movimiento).
+- Defensa en BD agregada en esta fase (migraciones `2026_10_08_211000` y `2026_10_11_1000*`…`100400`): trigger de
+  transición de estado (mismos pasos que la máquina, incluido rechazar "mismo estado"), líneas solo editables en
+  BORRADOR, discrepancia RESUELTA congelada, RN-01 en `transfer_item_lots`, recepción única, `quantity_missing`
+  coherente, `balance_after` del kardex = existencia actual, `assert_user_role` exige `is_active`, resolutor ≠ receptor.
+- Los errores lanzados por esos triggers responden 500 genérico (el servicio valida antes con su error específico);
+  si se quiere, mapearlos en `ApiErrorRenderer`.
+- `TransferResource.allowed_actions` (S-67) dice al frontend qué botones mostrar; `BusinessDenial` permite que una
+  Policy niegue con el JSON de error de dominio.
+- Endpoints nuevos: `transfers` (+ submit/approve/dispatch/receive/cancel), `transfer-discrepancies` (+ resolve),
+  `inventory-adjustments`, `kardex` (filtros incl. `reference_type`/`reference_id`), `alerts` (`limit`),
+  `stocks/in-transit`. Matriz de permisos en `AuthorizationMatrixTest`.
+- Pendiente menor: `TransferDiscrepancyPolicy::resolve` solo mira rol (la regla receptor≠resolutor vive en servicio
+  y BD); INSERT directo de un traslado en estado avanzado no se bloquea (S-64); zona `America/Bogota` duplicada en
+  un trigger (S-65); ajustes no idempotentes (S-61, el frontend debe bloquear doble clic); `GET /transfers/{id}`
+  sin alcance por bodega.
+
+## Lo que la Fase 3 debía saber de la Fase 2
 
 - `StockService` es el **único** punto que escribe `stocks` (UPDATE relativo + `RETURNING` para `balance_after`);
   exige transacción abierta y bloquea con `FOR UPDATE OF stocks` ordenado por `(product_id, expires_at, lot_id)`.
@@ -73,11 +95,11 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - `stocks` tiene `product_id` denormalizado con FK compuesta `(lot_id, product_id)`; índice parcial
   `WHERE quantity > 0` para FEFO.
 - Kardex: `quantity > 0`, `direction ±1`, `balance_after >= 0`, FK a `(warehouse_id, lot_id)` de `stocks`;
-  la BD **no** valida que `balance_after` = saldo anterior ± cantidad → lo garantiza `KardexService`.
+  desde la Fase 3 un trigger exige `balance_after` = existencia actual de la fila.
 - Traslados: los lotes se fijan al despachar en `transfer_item_lots` (FEFO multi-lote); una discrepancia
   por lote despachado.
-- La BD no valida: FEFO, vencimiento, vigencia de prescripción, transiciones de estado (valida la fila
-  final, no el paso). Todo eso va en `app/Domain` con pruebas.
+- La BD no valida: FEFO, vencimiento en dispensación, vigencia de prescripción, transiciones de dispensación.
+  Todo eso va en `app/Domain` con pruebas. (Transiciones de traslado y RN-01 en despacho sí, desde la Fase 3.)
 - El seeder de inventario ya usa `StockService` (hecho en la Fase 2).
 
 ## Riesgos conocidos / deuda abierta
@@ -85,8 +107,6 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - Triggers de solo inserción no bloquean `TRUNCATE` (necesario para pruebas). En producción: usuario de
   BD no dueño de las tablas (documentar en DEPLOY.md, Fase 7).
 - Cambiar `APP_KEY` o `PATIENT_HASH_KEY` invalida documentos cifrados/hashes (sin rutina de re-cifrado).
-- La BD no exige que quien resuelve una discrepancia sea regente ni que autorizadores estén activos
-  (`is_active`): cubrir en Policies (Fase 3/4) o con trigger.
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
 
 ### Pendientes de seguridad detectados en la revisión de la Fase 2 (para Fase 4 / 7)

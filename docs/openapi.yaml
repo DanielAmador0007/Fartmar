@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.2.0
+  version: 0.3.0
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
@@ -18,6 +18,7 @@ tags:
   - name: Autenticación
   - name: Dispensación
   - name: Inventario
+  - name: Traslados
 
 security:
   - bearerAuth: []
@@ -304,6 +305,409 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /stocks/in-transit:
+    get:
+      tags: [Inventario]
+      summary: Stock en tránsito entre bodegas (despachado y aún no recibido)
+      description: |
+        Lotes despachados (`SALIDA_TRASLADO` en el origen) de traslados `EN_TRANSITO` cuya recepción aún no se registra.
+        Una fila por traslado + lote (= total por origen, destino, producto y lote de ese traslado), del despacho más
+        antiguo al más reciente. Lo no recibido de un traslado ya recibido no aparece aquí: es una discrepancia
+        (`/transfer-discrepancies`). Origen + en tránsito + destino cuadra con el kardex.
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor` (solo lectura).
+      parameters:
+        - { name: warehouse_id, in: query, description: Bodega origen **o** destino, schema: { type: integer } }
+        - { name: origin_warehouse_id, in: query, schema: { type: integer } }
+        - { name: destination_warehouse_id, in: query, schema: { type: integer } }
+        - { name: product_id, in: query, schema: { type: integer } }
+        - { name: lot_id, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de stock en tránsito
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/InTransitStock' }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /transfers:
+    get:
+      tags: [Traslados]
+      summary: Listar traslados
+      description: |
+        Del más reciente al más antiguo. `warehouse_id` filtra traslados donde la bodega es origen **o** destino.
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
+      parameters:
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/TransferStatus' } }
+        - { name: warehouse_id, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de traslados (sin líneas; `items_count` trae cuántos productos tiene)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Transfer' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Traslados]
+      summary: Crear un traslado en BORRADOR
+      description: |
+        No mueve stock ni reserva lotes: los lotes se eligen al despachar (FEFO). `notes` es texto libre no confiable
+        (solo se valida la longitud, S-58). Roles: `auxiliar_farmacia`, `regente_farmacia`. Quien lo crea queda como solicitante (S-49).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferRequest' }
+      responses:
+        '201':
+          description: Traslado creado (BORRADOR)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransferEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422':
+          description: '`VALIDACION` (misma bodega, producto repetido, cantidad menor que 1, notas de más de 1000 caracteres) o `TRASLADO_INVALIDO`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /transfers/{id}:
+    get:
+      tags: [Traslados]
+      summary: Detalle de un traslado (líneas, lotes despachados/recibidos y discrepancias)
+      description: 'Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.'
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '200':
+          description: Traslado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransferEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /transfers/{id}/submit:
+    post:
+      tags: [Traslados]
+      summary: Solicitar (BORRADOR → SOLICITADO)
+      description: Solo quien creó el borrador (S-49).
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '200': { $ref: '#/components/responses/TransferOk' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /transfers/{id}/approve:
+    post:
+      tags: [Traslados]
+      summary: Aprobar (SOLICITADO → APROBADO)
+      description: |
+        Solo `regente_farmacia` activo **distinto** de quien solicitó (RN-08). Lo niega `TransferPolicy` (con
+        `SEGREGACION_FUNCIONES`, no `NO_AUTORIZADO`), lo repite el servicio y la BD lo vuelve a exigir
+        (CHECK `approved_by <> requested_by` y trigger de rol). Dos aprobaciones simultáneas: una gana, la otra 409.
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '200': { $ref: '#/components/responses/TransferOk' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: '`NO_AUTORIZADO` (rol) o `SEGREGACION_FUNCIONES` (`details.reason = MISMO_USUARIO`: quien solicitó intenta aprobar)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+
+  /transfers/{id}/dispatch:
+    post:
+      tags: [Traslados]
+      summary: Despachar (APROBADO → EN_TRANSITO)
+      description: |
+        Una transacción: bloquea el traslado, luego las existencias del ORIGEN por producto en orden FEFO
+        (sin lotes vencidos, RN-01), asigna lotes (puede ser más de uno por producto), descuenta con kardex
+        `SALIDA_TRASLADO` y guarda los lotes despachados. Todo o nada (S-54): si un producto no alcanza, no sale nada.
+        Roles: `auxiliar_farmacia`, `regente_farmacia`.
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      responses:
+        '200': { $ref: '#/components/responses/TransferOk' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`TRANSICION_INVALIDA` (no está APROBADO, p. ej. ya despachado), `STOCK_INSUFICIENTE` (con `warehouse_id`, `product_id`, `requested`, `available`) o `CONFLICTO_CONCURRENCIA`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /transfers/{id}/receive:
+    post:
+      tags: [Traslados]
+      summary: Recibir (EN_TRANSITO → RECIBIDO o RECIBIDO_PARCIAL)
+      description: |
+        Debe traer **todos** los lotes despachados con la cantidad recibida de cada uno (0..despachado, S-55).
+        Lo recibido entra a la bodega DESTINO (`ENTRADA_TRASLADO`). Si falta algo → `RECIBIDO_PARCIAL` y una
+        discrepancia `PENDIENTE` por cada lote con faltante. Un lote vencido en tránsito sí se recibe (S-48).
+        Roles: `auxiliar_farmacia`, `regente_farmacia`.
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lots]
+              properties:
+                lots:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [transfer_item_lot_id, quantity_received]
+                    properties:
+                      transfer_item_lot_id: { type: integer, description: 'Viene en `items[].lots[].transfer_item_lot_id` del traslado' }
+                      quantity_received: { type: integer, minimum: 0 }
+            example:
+              lots: [{ transfer_item_lot_id: 12, quantity_received: 2 }, { transfer_item_lot_id: 13, quantity_received: 1 }]
+      responses:
+        '200': { $ref: '#/components/responses/TransferOk' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '422':
+          description: '`VALIDACION` o `TRASLADO_INVALIDO` (`details.reason`: `LOTES_NO_COINCIDEN` con `missing_transfer_item_lot_ids` y `unknown_transfer_item_lot_ids`, o `CANTIDAD_RECIBIDA_INVALIDA`)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /transfers/{id}/cancel:
+    post:
+      tags: [Traslados]
+      summary: Anular (desde BORRADOR, SOLICITADO o APROBADO)
+      description: Quien creó el traslado o un regente (S-53). Nunca después de despachar (RN-07). No mueve stock.
+      parameters:
+        - $ref: '#/components/parameters/TransferId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200': { $ref: '#/components/responses/TransferOk' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/InvalidTransition' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /transfer-discrepancies:
+    get:
+      tags: [Traslados]
+      summary: Listar discrepancias de traslados
+      description: 'Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.'
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [PENDIENTE, RESUELTA] } }
+        - { name: transfer_id, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de discrepancias
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/TransferDiscrepancy' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /transfer-discrepancies/{id}/resolve:
+    post:
+      tags: [Traslados]
+      summary: Resolver una discrepancia (solo regente)
+      description: |
+        `REINTEGRAR_ORIGEN`: las unidades vuelven a la bodega origen con un movimiento `AJUSTE` (+) cuyo motivo cita
+        la discrepancia. `PERDIDA`: solo se registra (el stock ya salió del origen). Una sola vez (S-50); una vez
+        RESUELTA la BD no permite cambiarla. Quien **recibió** el traslado no puede resolver su discrepancia (S-60;
+        también lo exige un trigger en BD).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, resolution]
+              properties:
+                action: { type: string, enum: [REINTEGRAR_ORIGEN, PERDIDA] }
+                resolution: { type: string, minLength: 5, maxLength: 1000 }
+      responses:
+        '200':
+          description: Discrepancia RESUELTA
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/TransferDiscrepancy' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403':
+          description: '`NO_AUTORIZADO` (rol) o `SEGREGACION_FUNCIONES` (`details.reason = ES_RECEPTOR`: quien recibió el traslado intenta resolver)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`TRANSICION_INVALIDA` (ya estaba resuelta)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /inventory-adjustments:
+    post:
+      tags: [Inventario]
+      summary: Ajuste manual de inventario (movimiento AJUSTE)
+      description: |
+        Solo `regente_farmacia`. `quantity` con signo: positivo suma, negativo resta (nunca 0). Motivo obligatorio
+        (también CHECK en BD). Un ajuste negativo puede dar de baja un lote vencido (S-35); nunca deja stock negativo.
+        La respuesta es el movimiento de kardex creado (S-56).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warehouse_id, lot_id, quantity, reason]
+              properties:
+                warehouse_id: { type: integer }
+                lot_id: { type: integer }
+                quantity: { type: integer, minimum: -100000, maximum: 100000, not: { const: 0 } }
+                reason: { type: string, minLength: 5, maxLength: 500 }
+            example: { warehouse_id: 1, lot_id: 7, quantity: -3, reason: Baja por vencimiento }
+      responses:
+        '201':
+          description: Movimiento AJUSTE registrado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/KardexMovement' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`STOCK_INSUFICIENTE` (el ajuste negativo supera la existencia)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`VALIDACION` (sin motivo, cantidad 0) o `AJUSTE_INVALIDO`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /kardex:
+    get:
+      tags: [Inventario]
+      summary: Consultar el kardex (movimientos inmutables con saldo)
+      description: |
+        Del más reciente al más antiguo. `from` y `to` son días completos en hora de Bogotá (S-57).
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
+      parameters:
+        - { name: warehouse_id, in: query, schema: { type: integer } }
+        - { name: product_id, in: query, schema: { type: integer } }
+        - { name: lot_id, in: query, schema: { type: integer } }
+        - { name: type, in: query, schema: { type: string, enum: [ENTRADA, SALIDA_DISPENSACION, SALIDA_TRASLADO, ENTRADA_TRASLADO, AJUSTE] } }
+        - name: reference_type
+          in: query
+          description: |
+            Documento que originó el movimiento. `transfer` trae `SALIDA_TRASLADO`/`ENTRADA_TRASLADO`; `transfer_discrepancy`
+            el `AJUSTE` de reintegro; `dispensation` las `SALIDA_DISPENSACION`. Obligatorio si se envía `reference_id`.
+          schema: { type: string, enum: [dispensation, transfer, transfer_discrepancy] }
+        - { name: reference_id, in: query, description: 'Id del documento (requiere `reference_type`)', schema: { type: integer, minimum: 1 } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de movimientos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/KardexMovement' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /alerts:
+    get:
+      tags: [Inventario]
+      summary: Alertas de vencimiento y stock mínimo (RN-11)
+      description: |
+        `expiring_lots`: existencias con unidades que vencen en `ALERT_EXPIRY_DAYS` días o menos (90 por defecto),
+        incluidas las ya vencidas (`is_expired: true`). `low_stock`: productos con mínimo definido cuyo disponible en
+        lotes no vencidos es menor que el mínimo (incluye disponible 0). Ver S-51.
+        Cada lista trae como máximo `limit` filas (las más urgentes primero); `expiring_lots_total` y `low_stock_total`
+        dicen cuántas hay en total. Si el total supera el límite, filtrar por bodega (S-62).
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
+      parameters:
+        - { name: warehouse_id, in: query, schema: { type: integer } }
+        - { name: limit, in: query, description: Máximo de filas por lista, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        '200':
+          description: Alertas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Alerts' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -318,6 +722,11 @@ components:
       description: Clave generada por el cliente para cada intento lógico de dispensación (se recomienda un UUID). 8–100 caracteres `[A-Za-z0-9_-]`. Reutilícela solo al reintentar la MISMA solicitud.
       schema: { type: string, minLength: 8, maxLength: 100, pattern: '^[A-Za-z0-9_-]+$', example: 3f2b8c1e-8d4a-4f7e-9a51-0c6b2d9e7a10 }
     DispensationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    TransferId:
       name: id
       in: path
       required: true
@@ -354,6 +763,16 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    InvalidTransition:
+      description: '`TRANSICION_INVALIDA`: el traslado no está en el estado que permite esta acción (`details.from`, `details.to`); o `CONFLICTO_CONCURRENCIA`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TransferOk:
+      description: Traslado en su nuevo estado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TransferEnvelope' }
 
   schemas:
     Error:
@@ -381,6 +800,8 @@ components:
                 - NO_ENCONTRADO
                 - DEMASIADAS_SOLICITUDES
                 - CONFLICTO_CONCURRENCIA
+                - TRASLADO_INVALIDO
+                - AJUSTE_INVALIDO
                 - ERROR_INTERNO
             message: { type: string, description: Mensaje en español para el usuario final }
             details: { type: object, additionalProperties: true }
@@ -525,3 +946,209 @@ components:
             expires_at: { type: string, format: date }
             is_expired: { type: boolean }
         quantity: { type: integer }
+
+    TransferStatus:
+      type: string
+      enum: [BORRADOR, SOLICITADO, APROBADO, EN_TRANSITO, RECIBIDO, RECIBIDO_PARCIAL, ANULADO]
+
+    WarehouseSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+
+    ProductSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+
+    LotSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        lot_number: { type: string }
+        expires_at: { type: string, format: date }
+
+    InTransitStock:
+      type: object
+      properties:
+        transfer_id: { type: integer }
+        transfer_item_lot_id: { type: integer }
+        dispatched_at: { type: string, format: date-time }
+        origin_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        destination_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        product: { $ref: '#/components/schemas/ProductSummary' }
+        lot:
+          type: object
+          properties:
+            id: { type: integer }
+            lot_number: { type: string }
+            expires_at: { type: string, format: date }
+            is_expired: { type: boolean, description: 'Puede vencer en el camino; igual se recibe (S-48)' }
+        quantity: { type: integer, minimum: 1, description: Unidades despachadas de ese lote que van en camino }
+
+    TransferRequest:
+      type: object
+      required: [origin_warehouse_id, destination_warehouse_id, items]
+      properties:
+        origin_warehouse_id: { type: integer }
+        destination_warehouse_id: { type: integer, description: Distinta del origen }
+        notes: { type: [string, 'null'], maxLength: 1000, description: Texto libre no confiable (S-58) }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [product_id, quantity]
+            properties:
+              product_id: { type: integer, description: Sin repetir }
+              quantity: { type: integer, minimum: 1 }
+      example:
+        origin_warehouse_id: 1
+        destination_warehouse_id: 2
+        notes: Reposición semanal
+        items: [{ product_id: 3, quantity: 20 }]
+
+    TransferEnvelope:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/Transfer' }
+
+    Transfer:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { $ref: '#/components/schemas/TransferStatus' }
+        origin_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        destination_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        notes: { type: [string, 'null'] }
+        items_count: { type: integer, description: Solo en el listado }
+        items:
+          type: array
+          description: Solo en el detalle y en las respuestas de las acciones
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              product: { $ref: '#/components/schemas/ProductSummary' }
+              quantity_requested: { type: integer }
+              lots:
+                type: array
+                description: Lotes despachados (vacío hasta despachar)
+                items:
+                  type: object
+                  properties:
+                    transfer_item_lot_id: { type: integer }
+                    lot_id: { type: integer }
+                    lot_number: { type: string }
+                    expires_at: { type: string, format: date }
+                    quantity_dispatched: { type: integer }
+                    quantity_received: { type: [integer, 'null'], description: null mientras está en tránsito }
+                    discrepancy:
+                      oneOf:
+                        - type: 'null'
+                        - type: object
+                          properties:
+                            id: { type: integer }
+                            status: { type: string, enum: [PENDIENTE, RESUELTA] }
+                            quantity_missing: { type: integer }
+                            resolution_action: { type: [string, 'null'], enum: [REINTEGRAR_ORIGEN, PERDIDA, null] }
+        requested_by: { $ref: '#/components/schemas/UserSummary' }
+        requested_at: { type: [string, 'null'], format: date-time }
+        approved_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        approved_at: { type: [string, 'null'], format: date-time }
+        dispatched_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        dispatched_at: { type: [string, 'null'], format: date-time }
+        received_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        received_at: { type: [string, 'null'], format: date-time }
+        cancelled_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        cancelled_at: { type: [string, 'null'], format: date-time }
+        cancellation_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        allowed_actions:
+          type: array
+          description: |
+            Acciones que el usuario autenticado puede ejecutar ahora sobre el traslado: transición válida desde el estado
+            actual **y** permitida por `TransferPolicy` (p. ej. el regente que solicitó no recibe `approve`). Solo informa
+            qué botones mostrar; cada endpoint vuelve a autorizar y validar.
+          items: { type: string, enum: [submit, approve, dispatch, receive, cancel] }
+          example: [approve, cancel]
+
+    TransferDiscrepancy:
+      type: object
+      properties:
+        id: { type: integer }
+        status: { type: string, enum: [PENDIENTE, RESUELTA] }
+        transfer_id: { type: integer }
+        transfer_status: { $ref: '#/components/schemas/TransferStatus' }
+        origin_warehouse_id: { type: integer }
+        destination_warehouse_id: { type: integer }
+        transfer_item_lot_id: { type: integer }
+        product: { $ref: '#/components/schemas/ProductSummary' }
+        lot: { $ref: '#/components/schemas/LotSummary' }
+        quantity_dispatched: { type: integer }
+        quantity_received: { type: integer }
+        quantity_missing: { type: integer }
+        resolution_action: { type: [string, 'null'], enum: [REINTEGRAR_ORIGEN, PERDIDA, null] }
+        resolution: { type: [string, 'null'] }
+        resolved_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        resolved_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    KardexMovement:
+      type: object
+      properties:
+        id: { type: integer }
+        created_at: { type: string, format: date-time }
+        type: { type: string, enum: [ENTRADA, SALIDA_DISPENSACION, SALIDA_TRASLADO, ENTRADA_TRASLADO, AJUSTE] }
+        direction: { type: integer, enum: [-1, 1] }
+        quantity: { type: integer, minimum: 1 }
+        signed_quantity: { type: integer, description: quantity × direction }
+        balance_after: { type: integer, minimum: 0, description: Saldo del lote en la bodega después del movimiento }
+        warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        product: { $ref: '#/components/schemas/ProductSummary' }
+        lot: { $ref: '#/components/schemas/LotSummary' }
+        reason: { type: [string, 'null'], description: Obligatorio en AJUSTE }
+        reference:
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                type: { type: string, enum: [dispensation, transfer, transfer_discrepancy] }
+                id: { type: integer }
+        user: { $ref: '#/components/schemas/UserSummary' }
+
+    Alerts:
+      type: object
+      properties:
+        today: { type: string, format: date, description: Hoy en America/Bogota }
+        expiry_days: { type: integer, example: 90 }
+        limit: { type: integer, description: Máximo de filas por lista aplicado, example: 100 }
+        expiring_lots_total: { type: integer, description: Total de existencias por vencer (aunque la lista esté recortada) }
+        low_stock_total: { type: integer, description: Total de productos bajo mínimo (aunque la lista esté recortada) }
+        expiring_lots:
+          type: array
+          items:
+            type: object
+            properties:
+              stock_id: { type: integer }
+              warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+              product: { $ref: '#/components/schemas/ProductSummary' }
+              lot: { $ref: '#/components/schemas/LotSummary' }
+              quantity: { type: integer }
+              days_to_expire: { type: integer, description: 0 = vence hoy; negativo = vencido }
+              is_expired: { type: boolean }
+        low_stock:
+          type: array
+          items:
+            type: object
+            properties:
+              warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+              product: { $ref: '#/components/schemas/ProductSummary' }
+              min_quantity: { type: integer }
+              available: { type: integer, description: Unidades en lotes no vencidos }
+              shortfall: { type: integer }

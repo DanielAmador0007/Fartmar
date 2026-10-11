@@ -30,7 +30,8 @@ function kardexRow(Stock $stock, array $overrides = []): array
         'type' => 'ENTRADA',
         'quantity' => 5,
         'direction' => 1,
-        'balance_after' => 5,
+        // M3: el saldo debe ser la existencia actual (trigger kardex_movements_check_balance).
+        'balance_after' => $stock->quantity,
         'user_id' => User::factory()->create()->id,
     ], $overrides);
 }
@@ -250,4 +251,42 @@ it('no se puede borrar una existencia que tiene movimientos de kardex', function
     DB::table('kardex_movements')->insert(kardexRow($stock));
 
     expectDbRejects(fn () => DB::table('stocks')->where('id', $stock->id)->delete(), 'kardex_movements_warehouse_id_lot_id_foreign');
+});
+
+/*
+| M3 (revisión de la Fase 3): balance_after debe ser la existencia actual.
+*/
+
+it('M3: rechaza un movimiento de kardex con saldo falso', function (int $balance) {
+    $stock = Stock::factory()->create(['quantity' => 10]);
+
+    expectDbRejects(
+        fn () => DB::table('kardex_movements')->insert(kardexRow($stock, ['balance_after' => $balance])),
+        'kardex_movements_check_balance',
+    );
+
+    expect(KardexMovement::query()->count())->toBe(0);
+})->with([
+    'mayor que la existencia' => [11],
+    'menor que la existencia' => [9],
+    'cero con existencia' => [0],
+]);
+
+it('M3: un movimiento sin mover el stock (saldo anterior) se rechaza; tras mover el stock, se acepta', function () {
+    $stock = Stock::factory()->create(['quantity' => 10]);
+
+    // "Salida" de 3 registrada en el kardex sin descontar stocks.
+    expectDbRejects(fn () => DB::table('kardex_movements')->insert(kardexRow($stock, [
+        'type' => 'SALIDA_DISPENSACION', 'quantity' => 3, 'direction' => -1, 'balance_after' => 7,
+    ])), 'no coincide con la existencia actual 10');
+
+    // Mismo orden que StockService: primero el stock, luego el kardex.
+    DB::transaction(function () use ($stock) {
+        DB::update('UPDATE stocks SET quantity = quantity - 3 WHERE id = ?', [$stock->id]);
+        DB::table('kardex_movements')->insert(kardexRow($stock, [
+            'type' => 'SALIDA_DISPENSACION', 'quantity' => 3, 'direction' => -1, 'balance_after' => 7,
+        ]));
+    });
+
+    expect(KardexMovement::query()->value('balance_after'))->toBe(7);
 });
