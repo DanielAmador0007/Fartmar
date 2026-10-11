@@ -174,3 +174,25 @@ it('una dispensación no deja el nombre ni el documento del paciente en los logs
         expect($output)->not->toContain($leak);
     }
 });
+
+// --- Hallazgos de la prueba manual en el contenedor (Fase 4) ---------------------
+
+it('sin token y sin "Accept: application/json" responde 401 uniforme, no 500', function () {
+    $this->get('/api/v1/auth/me')
+        ->assertUnauthorized()
+        ->assertJsonPath('error.code', 'NO_AUTENTICADO')
+        ->assertHeader('X-Correlation-Id');
+});
+
+it('un error de negocio esperado (credenciales inválidas, stock insuficiente) no se escribe en el log', function () {
+    $s = DispensingScenario::make([[30, 1]], prescribed: 5);
+    $logs = LogCapture::start();
+
+    $this->postJson('/api/v1/auth/login', ['email' => 'nadie@fartmar.test', 'password' => 'x'])->assertUnauthorized();
+    Sanctum::actingAs($s->auxiliar);
+    $this->postJson('/api/v1/dispensations', $s->payload(3), ['Idempotency-Key' => (string) Str::uuid()])
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'STOCK_INSUFICIENTE');
+
+    expect($logs->records())->toBe([]);
+});
