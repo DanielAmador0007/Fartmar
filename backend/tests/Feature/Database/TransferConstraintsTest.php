@@ -268,10 +268,19 @@ it('líneas y lotes de traslado: sin duplicados, lote del producto y cantidades 
         'transfer_item_lots_received_range',
     );
 
-    // Límites válidos: recibir 0 (todo perdido) y recibir exactamente lo despachado.
-    DB::table('transfer_item_lots')->where('id', $itemLotId)->update(['quantity_received' => 0]);
+    // Límites válidos: recibir exactamente lo despachado y recibir 0 (todo
+    // perdido). Cada lote se recibe una sola vez (M2), por eso son dos lotes.
     DB::table('transfer_item_lots')->where('id', $itemLotId)->update(['quantity_received' => 5]);
     expect(DB::table('transfer_item_lots')->where('id', $itemLotId)->value('quantity_received'))->toBe(5);
+
+    $otherLotId = DB::table('transfer_item_lots')->insertGetId([
+        'transfer_item_id' => $itemId,
+        'lot_id' => Lot::factory()->create(['product_id' => $product->id])->id,
+        'product_id' => $product->id,
+        'quantity_dispatched' => 2,
+    ]);
+    DB::table('transfer_item_lots')->where('id', $otherLotId)->update(['quantity_received' => 0]);
+    expect(DB::table('transfer_item_lots')->where('id', $otherLotId)->value('quantity_received'))->toBe(0);
 });
 
 it('discrepancias: una por lote despachado, estado válido y resolución completa', function () {
