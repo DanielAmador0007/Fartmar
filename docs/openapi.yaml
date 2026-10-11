@@ -689,9 +689,12 @@ paths:
         `expiring_lots`: existencias con unidades que vencen en `ALERT_EXPIRY_DAYS` días o menos (90 por defecto),
         incluidas las ya vencidas (`is_expired: true`). `low_stock`: productos con mínimo definido cuyo disponible en
         lotes no vencidos es menor que el mínimo (incluye disponible 0). Ver S-51.
+        Cada lista trae como máximo `limit` filas (las más urgentes primero); `expiring_lots_total` y `low_stock_total`
+        dicen cuántas hay en total. Si el total supera el límite, filtrar por bodega (S-62).
         Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
       parameters:
         - { name: warehouse_id, in: query, schema: { type: integer } }
+        - { name: limit, in: query, description: Máximo de filas por lista, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
       responses:
         '200':
           description: Alertas
@@ -1124,6 +1127,9 @@ components:
       properties:
         today: { type: string, format: date, description: Hoy en America/Bogota }
         expiry_days: { type: integer, example: 90 }
+        limit: { type: integer, description: Máximo de filas por lista aplicado, example: 100 }
+        expiring_lots_total: { type: integer, description: Total de existencias por vencer (aunque la lista esté recortada) }
+        low_stock_total: { type: integer, description: Total de productos bajo mínimo (aunque la lista esté recortada) }
         expiring_lots:
           type: array
           items:

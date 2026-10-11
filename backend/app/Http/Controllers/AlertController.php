@@ -12,12 +12,16 @@ class AlertController extends Controller
     public function index(IndexAlertRequest $request, AlertService $alerts): AlertsResource
     {
         $warehouseId = $request->warehouseId();
+        $limit = $request->limit();
 
         return new AlertsResource([
             'today' => BusinessDate::today()->toDateString(),
             'expiry_days' => $alerts->expiryDays(),
-            'expiring' => $alerts->expiringLots($warehouseId),
-            'low_stock' => $alerts->lowStock($warehouseId),
+            'limit' => $limit,
+            'expiring' => $alerts->expiringLots($warehouseId, $limit),
+            'expiring_total' => $alerts->countExpiringLots($warehouseId),
+            'low_stock' => $alerts->lowStock($warehouseId, $limit),
+            'low_stock_total' => $alerts->countLowStock($warehouseId),
         ]);
     }
 }

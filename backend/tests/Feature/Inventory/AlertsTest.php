@@ -93,3 +93,42 @@ it('GET alerts devuelve ambas listas, filtra por bodega y la ve el auditor', fun
         ->assertJsonPath('data.expiring_lots.0.is_expired', false)
         ->assertJsonCount(0, 'data.low_stock');
 });
+
+it('L3: cada lista de alertas se recorta a limit (lo más urgente primero) e informa el total', function () {
+    // 4 lotes por vencer (5, 10, 20, 30 días) y 3 productos bajo mínimo.
+    $s = TransferScenario::make([[30, 1], [5, 1], [20, 1], [10, 1]]);
+    foreach ([$s->product, Product::factory()->create(), Product::factory()->create()] as $product) {
+        StockMinimum::query()->create(['warehouse_id' => $s->origin->id, 'product_id' => $product->id, 'min_quantity' => 50]);
+    }
+
+    $service = app(AlertService::class);
+    expect(array_map(fn ($a) => $a->daysToExpire, $service->expiringLots(null, 2)))->toBe([5, 10])
+        ->and($service->countExpiringLots())->toBe(4)
+        ->and($service->lowStock(null, 2))->toHaveCount(2)
+        ->and($service->countLowStock())->toBe(3)
+        ->and($service->countLowStock($s->destination->id))->toBe(0);
+
+    Sanctum::actingAs(User::factory()->auditor()->create());
+    test()->getJson('/api/v1/alerts?limit=2')
+        ->assertOk()
+        ->assertJsonPath('data.limit', 2)
+        ->assertJsonCount(2, 'data.expiring_lots')
+        ->assertJsonPath('data.expiring_lots_total', 4)
+        ->assertJsonPath('data.expiring_lots.0.days_to_expire', 5)
+        ->assertJsonCount(2, 'data.low_stock')
+        ->assertJsonPath('data.low_stock_total', 3);
+
+    // Por defecto 100.
+    test()->getJson('/api/v1/alerts')
+        ->assertOk()
+        ->assertJsonPath('data.limit', 100)
+        ->assertJsonCount(4, 'data.expiring_lots');
+});
+
+it('L3: limit fuera de rango responde 422', function (string $limit) {
+    Sanctum::actingAs(User::factory()->auditor()->create());
+
+    test()->getJson("/api/v1/alerts?limit={$limit}")
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'VALIDACION');
+})->with(['0', '501', 'muchos']);

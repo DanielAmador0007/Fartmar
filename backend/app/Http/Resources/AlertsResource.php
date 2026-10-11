@@ -10,7 +10,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /**
  * Alertas de inventario (RN-11): vencimientos y stock mínimo.
  *
- * @property array{today: string, expiry_days: int, expiring: list<ExpiringLotAlert>, low_stock: list<LowStockAlert>} $resource
+ * Cada lista trae como máximo "limit" filas; *_total dice cuántas hay en
+ * total (si total > limit, la lista está recortada: filtrar por bodega).
+ *
+ * @property array{today: string, expiry_days: int, limit: int, expiring: list<ExpiringLotAlert>, expiring_total: int, low_stock: list<LowStockAlert>, low_stock_total: int} $resource
  */
 class AlertsResource extends JsonResource
 {
@@ -22,6 +25,9 @@ class AlertsResource extends JsonResource
         return [
             'today' => $this->resource['today'],
             'expiry_days' => $this->resource['expiry_days'],
+            'limit' => $this->resource['limit'],
+            'expiring_lots_total' => $this->resource['expiring_total'],
+            'low_stock_total' => $this->resource['low_stock_total'],
             'expiring_lots' => array_map(fn (ExpiringLotAlert $alert) => [
                 'stock_id' => $alert->stock->id,
                 'warehouse' => new WarehouseSummaryResource($alert->stock->warehouse),
