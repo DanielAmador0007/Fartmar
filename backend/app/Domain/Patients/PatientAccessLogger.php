@@ -24,6 +24,9 @@ final class PatientAccessLogger
 
     public const PRESCRIPTIONS = 'patient.prescriptions';
 
+    /** GET /dispensations/{id}: expone el paciente y lo que se le entregó. */
+    public const DISPENSATION_VIEW = 'patient.dispensation_view';
+
     public function record(User $user, Patient $patient, string $action): PatientAccessLog
     {
         return PatientAccessLog::query()->create([

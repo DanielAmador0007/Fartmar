@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int $id
  * @property int $user_id
  * @property int $patient_id
- * @property string $action patient.search | patient.view | patient.prescriptions
+ * @property string $action patient.search | patient.view | patient.prescriptions | patient.dispensation_view
  * @property bool $masked true si el usuario vio los datos enmascarados (auditor)
  * @property string|null $ip
  * @property string|null $correlation_id

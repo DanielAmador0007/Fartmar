@@ -270,3 +270,47 @@ it('el auditor no ve el motivo de rechazo de una dispensación (texto libre); el
     Sanctum::actingAs($s->regente2);
     $this->getJson("/api/v1/dispensations/{$pending->id}")->assertOk()->assertJsonPath('data.rejection_reason', 'Paciente Juana sin documento');
 });
+
+/*
+| Revisión de la Fase 4 (M3, B6): ver una dispensación es un acceso al
+| paciente; un 403 o un 404 no se registran.
+*/
+
+it('ver una dispensación registra patient.dispensation_view (enmascarado para el auditor)', function (Role $role, bool $masked) {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5);
+    $dispensation = app(DispenseService::class)->create($s->auxiliar, $s->data(1), (string) Str::uuid())->dispensation;
+    $user = actingAsRole($role);
+
+    $this->getJson("/api/v1/dispensations/{$dispensation->id}", ['X-Correlation-Id' => 'ver-dispensacion'])->assertOk();
+
+    $log = PatientAccessLog::query()->sole();
+    expect($log->action)->toBe('patient.dispensation_view')
+        ->and($log->user_id)->toBe($user->id)
+        ->and($log->patient_id)->toBe($s->patient->id)
+        ->and($log->masked)->toBe($masked)
+        ->and($log->correlation_id)->not->toBeNull();
+})->with([
+    'auxiliar' => [Role::AuxiliarFarmacia, false],
+    'auditor' => [Role::Auditor, true],
+]);
+
+it('una dispensación negada (403) o inexistente (404) no registra acceso', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5);
+    $dispensation = app(DispenseService::class)->create($s->auxiliar, $s->data(1), (string) Str::uuid())->dispensation;
+
+    actingAsRole(Role::Medico);
+    $this->getJson("/api/v1/dispensations/{$dispensation->id}")->assertForbidden();
+    actingAsRole(Role::AuxiliarFarmacia);
+    $this->getJson('/api/v1/dispensations/999999')->assertNotFound();
+
+    expect(PatientAccessLog::query()->count())->toBe(0);
+});
+
+it('B6: un paciente inexistente responde 404 y no registra acceso', function () {
+    actingAsRole(Role::Medico);
+
+    $this->getJson('/api/v1/patients/999999')->assertNotFound()->assertJsonPath('error.code', 'NO_ENCONTRADO');
+    $this->getJson('/api/v1/patients/999999/prescriptions')->assertNotFound();
+
+    expect(PatientAccessLog::query()->count())->toBe(0);
+});

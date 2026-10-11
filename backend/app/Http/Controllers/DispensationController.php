@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Domain\Dispensing\DispenseService;
+use App\Domain\Patients\PatientAccessLogger;
 use App\Http\Requests\PreviewDispensationRequest;
 use App\Http\Requests\RejectDispensationRequest;
 use App\Http\Requests\StoreDispensationRequest;
@@ -46,9 +47,11 @@ class DispensationController extends Controller
         return $response;
     }
 
-    public function show(Dispensation $dispensation): DispensationResource
+    public function show(Request $request, Dispensation $dispensation, PatientAccessLogger $accessLog): DispensationResource
     {
         Gate::authorize('view', $dispensation);
+        // RN-10: la dispensación dice a qué paciente se le entregó qué.
+        $accessLog->record($this->currentUser($request), $dispensation->patient()->firstOrFail(), PatientAccessLogger::DISPENSATION_VIEW);
 
         return new DispensationResource($dispensation->load(DispensationResource::RELATIONS));
     }
