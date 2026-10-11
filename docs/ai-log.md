@@ -299,3 +299,84 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Un `UPDATE` manual que incluya `status` con el mismo valor (p. ej. un script que reescribe la fila completa) ahora falla; hay que omitir `status` del `SET`.
   - `quantity_received` sigue aceptando reescribir el mismo valor (prueba M2 existente); la protección contra la doble recepción total recae en el trigger de transición, que corre al final de la transacción de recepción (deshace todo).
   - Las pruebas "control" dependen de pausas (300 ms) para forzar la carrera; en una máquina muy lenta podrían dar solo 409 y fallar por "no se reprodujo la carrera" (no por un bug). En 5 corridas seguidas no pasó.
+
+### 2026-10-11 — Fase 4: logs JSON sin datos personales y X-Correlation-Id
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `app/Logging/RedactSensitiveData.php` (procesador Monolog) y `app/Logging/UseRedaction.php` (tap que lo agrega a los canales `json`, `stderr`, `single`, `daily`, `monthly`).
+  - Canal `json` en `config/logging.php` (JsonFormatter a stderr) como predeterminado; `LOG_CHANNEL=json` en `docker-compose.yml`, `.env.example` y `backend/.env.example`; `mask_bindings_in_exception_messages` en la conexión pgsql.
+  - `app/Http/Middleware/AssignCorrelationId.php` registrado al inicio del grupo `api` en `bootstrap/app.php`.
+  - `tests/Support/LogCapture.php` (usa el canal json REAL, solo cambia stderr por un `TestHandler`) y `tests/Feature/Security/LoggingPrivacyTest.php`.
+- Qué decisión tomó y por qué:
+  - Las excepciones se convierten en un resumen propio en vez de dejar que Monolog serialice el objeto: el mensaje de `QueryException` trae el SQL con valores y la `PDOException` anidada trae la línea `DETAIL` de PostgreSQL ("Key (email)=(…)"). El resumen conserva el SQL con `?`, que es lo útil para depurar.
+  - Redacción por **clave** (en cualquier nivel) y por **contenido** (correos; en el mensaje, 6+ dígitos). Se usa `tap` y no `processors` porque funciona con cualquier driver; el procesador de Context de Laravel se agrega después y Monolog ejecuta primero el último agregado, así que la redacción corre al final.
+  - El correlation id del cliente se acepta solo con formato estricto (`\A[A-Za-z0-9-]{1,64}\z`); se usa `\z` y no `$` porque `$` acepta un salto de línea final.
+  - La IP del usuario va a `Context` (y por tanto a cada línea de log); se considera dato operativo de seguridad del personal, no del paciente (S-73).
+- Puntos que Daniel debe revisar/entender:
+  - Cómo llega `correlation_id` a las filas: el middleware lo pone en `Context`; `DispenseService`, `KardexService` y `AuditLogger` ya lo leían (antes quedaba `null`). Hay prueba que lo verifica en dispensación, kardex y `audit_logs`.
+  - Por qué el mensaje del log queda solo con la primera línea y sin "(Connection: …)".
+  - Para ver un ejemplo real, reportar una excepción desde `php artisan tinker` con `LOG_CHANNEL=json` (se probó con un INSERT duplicado en `users`: sale `users_email_unique` y el SQL con `?`, sin el correo).
+- Riesgos o cosas que podrían estar mal:
+  - Es una red de seguridad, no una garantía: un dato personal en una clave con nombre inocente (p. ej. `nota`) solo se limpia si es un correo. La regla sigue siendo no pasar datos personales al log.
+  - El servidor embebido de PHP imprime su propia línea de acceso (texto, no JSON) en stderr; con la búsqueda por POST no lleva el documento, pero en la Fase 7 (php-fpm + Nginx) hay que revisar el formato del access log de Nginx.
+  - Números de 6+ dígitos dentro del texto del mensaje (también un id grande) salen como `[NUM]`; en el contexto estructurado se conservan.
+
+### 2026-10-11 — Fase 4: pacientes con enmascarado por rol y bitácora de accesos (RN-10)
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `app/Domain/Patients/PatientMasker.php` (funciones puras), `PatientAccessLogger.php`, `PatientFinder.php`; `app/Policies/PatientPolicy.php` (`viewAny`, `view`, `viewUnmasked`); `PatientResource`, `PrescriptionResource`; `app/Domain/Prescriptions/PrescriptionQuery.php`; `PatientController`, `SearchPatientRequest`; `Prescription::isCurrent()`.
+  - Migración `2026_10_11_110000_add_masked_to_patient_access_logs.php`: columna `masked` y CHECK de acciones.
+  - Endpoints: `POST /patients/search`, `GET /patients/{id}`, `GET /patients/{id}/prescriptions`.
+  - Pruebas: `tests/Unit/PatientMaskerTest.php`, `tests/Feature/Api/PatientApiTest.php`; ajuste de `PrivacyConstraintsTest` (usaba la acción `VER`, ahora inválida por el CHECK).
+- Qué decisión tomó y por qué:
+  - **Búsqueda por POST y no por GET** (desvío respecto a lo pedido): con GET el documento queda en la URL, que se imprime en el log de acceso del servidor (el embebido de PHP lo hace hoy) y de Nginx, en el historial del navegador y en `Referer` (S-69).
+  - Admin no lee pacientes (S-68). El auditor recibe las mismas claves con valores enmascarados y `masked: true`, para que el frontend no cambie de forma.
+  - Quién ve sin máscara lo decide la Policy (`viewUnmasked`), que usan tanto el Resource como el logger: la columna `masked` dice exactamente lo que vio el usuario.
+  - El acceso se registra después de `Gate::authorize` y antes de responder: un 403 no deja fila (probado en la matriz para todos los endpoints).
+  - Búsqueda fallida → `audit_logs` `patient.search_not_found` sin el número (la bitácora de accesos exige `patient_id`).
+  - Reservado/disponible de cada línea con `withSum` sobre dispensaciones `PENDIENTE_AUTORIZACION`: la misma cuenta que `DispenseService`.
+- Puntos que Daniel debe revisar/entender:
+  - `PatientResource` enmascara por defecto si no hay usuario o no tiene permiso (valor seguro).
+  - La búsqueda es exacta por HMAC (`DocumentHasher`): no se pueden buscar "parecidos" sin descifrar todo, y eso es intencional.
+  - El documento sigue cifrado en la BD; hay prueba que lee la fila cruda tras usar la API.
+- Riesgos o cosas que podrían estar mal:
+  - Enumeración: el binding de ruta responde 404 a un id inexistente antes de la Policy, así que un admin distingue ids existentes (403) de inexistentes (404). No revela datos.
+  - Sin asignación médico ↔ paciente: cualquier médico ve a cualquier paciente (queda en la bitácora).
+  - La lista de prescripciones se limita a 50; no hay paginación.
+
+### 2026-10-11 — Fase 4: creación de prescripciones (médico)
+- Agente: seguridad-privacidad
+- Qué generó la IA: `PrescriptionPolicy`, `StorePrescriptionRequest`, `PrescriptionService`, `PrescriptionController`, ruta `POST /api/v1/prescriptions`, `tests/Feature/Api/PrescriptionApiTest.php` (incluye dispensar de inmediato contra la prescripción creada).
+- Qué decisión tomó y por qué: vigencia desde **mañana** (no "solo hoy") por el CHECK `valid_until >= issued_at::date` con `issued_at` en UTC (S-70); número `RX-` + ULID para no necesitar un consecutivo con bloqueo; auditoría con IDs y conteos, sin las indicaciones (texto libre).
+- Puntos que Daniel debe revisar/entender: la validación de fechas usa `BusinessDate::today()` (Bogotá) en las reglas `after`/`before_or_equal`.
+- Riesgos o cosas que podrían estar mal: no hay edición ni anulación de prescripciones por API; el catálogo no tiene `is_active`, así que no se distingue un producto descatalogado.
+
+### 2026-10-11 — Fase 4: login fallido auditado y administración de usuarios
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `LoginService::recordFailure()` y `LoginService::emailHash()`; `DocumentHasher::key()` pasó a público para reutilizar la clave HMAC.
+  - `UserPolicy`, `UserManagementService`, `SelfLockoutException`, `StoreUserRequest`, `UpdateUserRequest`, `UserController`, rutas `GET/POST /users` y `PATCH /users/{id}`; `UserResource` ahora incluye `is_active`.
+  - Pruebas: `tests/Feature/Security/LoginAuditTest.php`, `tests/Feature/Api/UserAdminApiTest.php`.
+- Qué decisión tomó y por qué:
+  - El correo del login fallido se guarda como HMAC con prefijo `login-email:` (S-71): agrupa intentos contra la misma cuenta (sin importar mayúsculas) y no es reversible sin la clave. El motivo (`USUARIO_DESCONOCIDO` / `CLAVE_INCORRECTA` / `USUARIO_INACTIVO`) es solo interno.
+  - Revocar tokens también al **cambiar el rol**, no solo al desactivar: la sesión se emitió con los permisos anteriores.
+  - Autobloqueo (desactivarse o quitarse admin) → 422 `OPERACION_NO_PERMITIDA` desde el servicio (es regla de negocio, no de rol).
+- Puntos que Daniel debe revisar/entender:
+  - `audit_logs.metadata` es `jsonb`: PostgreSQL reordena las claves, por eso las pruebas comparan con `toEqual` y no con `toBe`.
+  - El `PATCH` ignora `email` y `password` (no están en las reglas) en vez de rechazarlos.
+- Riesgos o cosas que podrían estar mal:
+  - Una fila de auditoría por intento fallido; con el límite de 5/min por correo + IP y 20/min por IP el volumen está acotado, pero un ataque distribuido puede llenar `audit_logs` (no hay retención definida).
+  - No hay restablecimiento de contraseña ni cambio de correo.
+  - Dos admins que se desactivan mutuamente al mismo tiempo podrían dejar el sistema sin admins activos (no se bloquea la fila); muy improbable, se recupera por seeder o BD.
+
+### 2026-10-11 — Fase 4: matriz de autorización ampliada y errores de triggers
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `AuthorizationMatrixTest`: 7 endpoints nuevos × 5 roles; prueba "sin autenticar → 401" para los 28 endpoints; un 403 no deja filas en `patient_access_logs`; prueba que falla si alguna ruta `/api/v1` (salvo login/logout) queda fuera de la matriz.
+  - `PostgresError::triggerGuard()` y mapeo en `ApiErrorRenderer` de los triggers de traslados a 409 `TRANSICION_INVALIDA` / 403 `SEGREGACION_FUNCIONES` / 422 `LOTE_VENCIDO` (S-76), con pruebas en `DatabaseErrorMappingTest`.
+  - Revisión: `route:list` (todas con `auth:sanctum` salvo login, verificado por prueba), sin `dd(`/`dump(`, sin secretos en código, sin SQL crudo con interpolación de variables.
+- Qué decisión tomó y por qué: solo se mapean los triggers que significan "el traslado cambió por otro camino"; los que indican un bug (saldo de kardex, faltante incoherente) siguen como 500, igual que la decisión de la Fase 2 para CHECK desconocidos.
+- Puntos que Daniel debe revisar/entender: el prefijo `<guard>:` se lee de la primera línea del mensaje del servidor (`errorInfo[2]`), no del SQL, igual que `PostgresError::constraint()`.
+- Riesgos o cosas que podrían estar mal:
+  - Si se renombra un trigger o cambia el prefijo del mensaje, el mapeo vuelve a 500 sin avisar (hay prueba con el trigger de transición real).
+  - El asistente IA (Fase 6) aún no existe: queda pendiente verificar que ninguna herramienta devuelva datos de pacientes.

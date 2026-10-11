@@ -46,7 +46,7 @@ erDiagram
 | `transfers` | `status` CHECK (7 estados); origen ≠ destino; **`approved_by <> requested_by`**; cada estado exige sus actores/fechas; ANULADO solo sin `dispatched_at` y con motivo no vacío (`transfers_cancel_reason_required`, Fase 3); trigger: quien aprueba es `regente_farmacia` | RN-07, RN-08 |
 | `transfer_items` / `transfer_item_lots` | cantidades `> 0`; `0 <= quantity_received <= quantity_dispatched`; FK compuestas lote/producto | RN-07 |
 | `transfer_discrepancies` | `quantity_missing > 0`; `status` CHECK; RESUELTA ⇒ resolución, quién y cuándo; `resolution_action` ∈ (`REINTEGRAR_ORIGEN`, `PERDIDA`) y obligatoria solo si RESUELTA; trigger: quien resuelve es `regente_farmacia` (Fase 3, S-50) | RN-07 |
-| `patient_access_logs`, `audit_logs` | **trigger append-only**; solo IDs (sin PII) | RN-10 |
+| `patient_access_logs`, `audit_logs` | **trigger append-only**; solo IDs (sin PII). `patient_access_logs.action` CHECK en (`patient.search`, `patient.view`, `patient.prescriptions`) y `masked` (si se vio enmascarado), Fase 4 | RN-10 |
 
 Funciones PL/pgSQL compartidas (migración `create_db_guard_functions`): `forbid_append_only_mutation()` y `assert_user_role()`.
 
