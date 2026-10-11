@@ -199,3 +199,19 @@ it('mapea los demás triggers de traslados conocidos y deja como 500 los que ind
     'saldo de kardex (bug)' => ['ERROR:  kardex_movements_check_balance: balance_after 3 no coincide con la existencia actual 4 (bodega 1, lote 2)', 500, 'ERROR_INTERNO'],
     'prefijo solo en el SQL, no en el servidor' => ['ERROR:  new row for relation "x" violates check constraint "y"', 500, 'ERROR_INTERNO'],
 ]);
+
+it('B4: users_email_unique (dos altas simultáneas) responde 422 VALIDACION en email, sin el correo', function () {
+    Route::middleware('api')->post('/api/v1/_prueba/correo', fn () => throw pgQueryException(
+        '23505',
+        "ERROR:  duplicate key value violates unique constraint \"users_email_unique\"\nDETAIL:  Key (email)=(dup@fartmar.test) already exists.",
+        'insert into "users" ("email") values (?)',
+    ));
+
+    $body = $this->postJson('/api/v1/_prueba/correo')
+        ->assertUnprocessable()
+        ->assertJsonPath('error.code', 'VALIDACION')
+        ->assertJsonPath('error.details.fields.email.0', 'El correo ya está registrado.')
+        ->getContent();
+
+    expect((string) $body)->not->toContain('dup@fartmar.test');
+});

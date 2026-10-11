@@ -118,6 +118,14 @@ final class ApiErrorRenderer
                 'AJUSTE_INVALIDO',
                 'Todo ajuste de inventario necesita un motivo.',
             ),
+            // Dos altas simultáneas con el mismo correo: la validación "unique"
+            // pasó en ambas y el índice frenó la segunda. Mismo 422 que la validación.
+            PostgresError::isViolationOf($e, PostgresError::UNIQUE_VIOLATION, 'users_email_unique') => self::error(
+                422,
+                'VALIDACION',
+                'Hay datos inválidos o incompletos en la solicitud.',
+                ['fields' => ['email' => ['El correo ya está registrado.']]],
+            ),
             // Triggers de traslados (Fase 3). El servicio valida antes con su error
             // específico; si la BD los dispara es porque el traslado cambió por
             // otro camino. Los demás triggers (saldo de kardex, faltante) indican
