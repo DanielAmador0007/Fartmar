@@ -13,6 +13,7 @@ use App\Models\TransferItemLot;
 use App\Models\User;
 use App\Policies\BusinessDenial;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\TransferScenario;
@@ -405,4 +406,49 @@ it('M6: el regente que solicitó no ve "approve" en allowed_actions; otro regent
 
     // También en el listado.
     test()->getJson('/api/v1/transfers')->assertJsonPath('data.0.allowed_actions', ['approve', 'cancel']);
+});
+
+it('L6: los actores tienen la misma forma en el listado y en el detalle', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = $s->dispatched(3);
+
+    Sanctum::actingAs(User::factory()->auditor()->create());
+    $detail = test()->getJson("/api/v1/transfers/{$transfer->id}")->assertOk()->json('data');
+    $list = test()->getJson('/api/v1/transfers')->assertOk()->json('data.0');
+
+    foreach (['requested_by', 'approved_by', 'dispatched_by', 'received_by', 'cancelled_by'] as $actor) {
+        expect($list)->toHaveKey($actor)
+            ->and($list[$actor])->toBe($detail[$actor]);
+    }
+
+    expect($list['approved_by'])->toBe(['id' => $s->regente->id, 'name' => $s->regente->name, 'role' => 'regente_farmacia'])
+        ->and($list['dispatched_by']['id'])->toBe($s->auxiliar->id)
+        ->and($list['received_by'])->toBeNull()
+        ->and($list['cancelled_by'])->toBeNull();
+});
+
+it('L6: el listado no hace una consulta por traslado (sin N+1)', function () {
+    $s = TransferScenario::make([[30, 100]]);
+    $auditor = User::factory()->auditor()->create();
+    Sanctum::actingAs($auditor);
+
+    $queriesFor = function (): int {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        test()->getJson('/api/v1/transfers')->assertOk();
+        $count = count(DB::getQueryLog());
+        DB::disableQueryLog();
+
+        return $count;
+    };
+
+    $s->dispatched(1);
+    $one = $queriesFor();
+
+    $s->dispatched(1);
+    $s->approved(1);
+    $s->requested(1);
+    $many = $queriesFor();
+
+    expect($many)->toBe($one);
 });

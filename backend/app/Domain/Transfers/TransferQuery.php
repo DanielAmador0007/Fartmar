@@ -13,6 +13,21 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 final class TransferQuery
 {
     /**
+     * Relaciones del listado: bodegas y TODOS los actores, para que *_by
+     * tenga la misma forma que en el detalle (TransferResource::RELATIONS las
+     * incluye). Eager loading: una consulta por relación, sin N+1.
+     */
+    public const LIST_RELATIONS = [
+        'originWarehouse',
+        'destinationWarehouse',
+        'requester',
+        'approver',
+        'dispatcher',
+        'receiver',
+        'canceller',
+    ];
+
+    /**
      * warehouse_id filtra traslados donde la bodega es origen O destino.
      *
      * @param  array{status?: string|null, warehouse_id?: int|null, per_page?: int}  $filters
@@ -21,7 +36,7 @@ final class TransferQuery
     public function search(array $filters): LengthAwarePaginator
     {
         return Transfer::query()
-            ->with(['originWarehouse', 'destinationWarehouse', 'requester'])
+            ->with(self::LIST_RELATIONS)
             ->withCount('items')
             ->when($filters['status'] ?? null, fn ($q, $status) => $q->where('status', $status))
             ->when($filters['warehouse_id'] ?? null, fn ($q, $id) => $q->where(

@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Domain\Transfers\TransferActions;
+use App\Domain\Transfers\TransferQuery;
 use App\Models\Transfer;
 use App\Models\TransferItem;
 use App\Models\TransferItemLot;
@@ -21,18 +22,21 @@ use Illuminate\Http\Resources\Json\JsonResource;
  */
 class TransferResource extends JsonResource
 {
-    /** Relaciones que el controlador carga para el detalle. */
+    /** Relaciones del detalle: las del listado + líneas, lotes y discrepancias. */
     public const RELATIONS = [
-        'originWarehouse',
-        'destinationWarehouse',
+        ...TransferQuery::LIST_RELATIONS,
         'items.product',
         'items.lots.lot',
         'items.lots.discrepancy',
-        'requester',
-        'approver',
-        'dispatcher',
-        'receiver',
-        'canceller',
+    ];
+
+    /** Actor (columna *_by) => relación con el usuario. */
+    private const ACTORS = [
+        'requested_by' => 'requester',
+        'approved_by' => 'approver',
+        'dispatched_by' => 'dispatcher',
+        'received_by' => 'receiver',
+        'cancelled_by' => 'canceller',
     ];
 
     /**
@@ -70,15 +74,15 @@ class TransferResource extends JsonResource
                     ],
                 ])->values(),
             ])->values()),
-            'requested_by' => new UserSummaryResource($this->whenLoaded('requester')),
+            'requested_by' => $this->actor('requested_by'),
             'requested_at' => $this->requested_at?->toIso8601String(),
-            'approved_by' => $this->approved_by ? new UserSummaryResource($this->whenLoaded('approver')) : null,
+            'approved_by' => $this->actor('approved_by'),
             'approved_at' => $this->approved_at?->toIso8601String(),
-            'dispatched_by' => $this->dispatched_by ? new UserSummaryResource($this->whenLoaded('dispatcher')) : null,
+            'dispatched_by' => $this->actor('dispatched_by'),
             'dispatched_at' => $this->dispatched_at?->toIso8601String(),
-            'received_by' => $this->received_by ? new UserSummaryResource($this->whenLoaded('receiver')) : null,
+            'received_by' => $this->actor('received_by'),
             'received_at' => $this->received_at?->toIso8601String(),
-            'cancelled_by' => $this->cancelled_by ? new UserSummaryResource($this->whenLoaded('canceller')) : null,
+            'cancelled_by' => $this->actor('cancelled_by'),
             'cancelled_at' => $this->cancelled_at?->toIso8601String(),
             'cancellation_reason' => $this->cancellation_reason,
             'created_at' => $this->created_at?->toIso8601String(),
@@ -86,6 +90,24 @@ class TransferResource extends JsonResource
             // el frontend decide qué botones mostrar. El endpoint vuelve a validar.
             'allowed_actions' => $this->allowedActions($request),
         ];
+    }
+
+    /**
+     * Un actor siempre con la misma forma: {id, name, role} o null si ese paso
+     * aún no ocurrió. Si la relación no se cargó, la clave se omite (nunca
+     * dispara una consulta por fila); listado y detalle cargan todas.
+     *
+     * @param  key-of<self::ACTORS>  $column
+     */
+    private function actor(string $column): mixed
+    {
+        $relation = self::ACTORS[$column];
+
+        return $this->whenLoaded($relation, function () use ($relation): ?UserSummaryResource {
+            $user = $this->resource->getRelation($relation);
+
+            return $user instanceof User ? new UserSummaryResource($user) : null;
+        });
     }
 
     /**
