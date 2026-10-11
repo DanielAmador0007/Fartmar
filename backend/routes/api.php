@@ -42,7 +42,8 @@ Route::prefix('v1')->group(function (): void {
         Route::post('dispensations/{dispensation}/reject', [DispensationController::class, 'reject'])
             ->name('dispensations.reject');
 
-        // Inventario (consulta).
+        // Inventario (consulta). "in-transit" va antes de cualquier stocks/{param}.
+        Route::get('stocks/in-transit', [StockController::class, 'inTransit'])->name('stocks.in-transit');
         Route::get('stocks', [StockController::class, 'index'])->name('stocks.index');
 
         // Traslados entre bodegas (RN-07, RN-08).

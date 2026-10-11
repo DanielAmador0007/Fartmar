@@ -45,6 +45,12 @@ class TransferItemLot extends Model
         return $this->belongsTo(Lot::class);
     }
 
+    /** @return BelongsTo<Product, $this> */
+    public function product(): BelongsTo
+    {
+        return $this->belongsTo(Product::class);
+    }
+
     /** @return HasOne<TransferDiscrepancy, $this> */
     public function discrepancy(): HasOne
     {

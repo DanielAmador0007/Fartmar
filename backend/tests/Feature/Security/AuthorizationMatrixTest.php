@@ -37,6 +37,7 @@ function authorizationEndpoints(): array
     return [
         'GET auth/me' => [Role::cases(), fn () => test()->getJson('/api/v1/auth/me')],
         'GET stocks' => [[...$pharmacy, Role::Auditor], fn () => test()->getJson('/api/v1/stocks')],
+        'GET stocks/in-transit' => [[...$pharmacy, Role::Auditor], fn () => test()->getJson('/api/v1/stocks/in-transit')],
         'GET dispensations/preview' => [$pharmacy, fn (DispensingScenario $s) => test()->getJson(
             "/api/v1/dispensations/preview?warehouse_id={$s->warehouse->id}&product_id={$s->product->id}&quantity=1",
         )],

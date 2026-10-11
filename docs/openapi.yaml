@@ -305,6 +305,41 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /stocks/in-transit:
+    get:
+      tags: [Inventario]
+      summary: Stock en tránsito entre bodegas (despachado y aún no recibido)
+      description: |
+        Lotes despachados (`SALIDA_TRASLADO` en el origen) de traslados `EN_TRANSITO` cuya recepción aún no se registra.
+        Una fila por traslado + lote (= total por origen, destino, producto y lote de ese traslado), del despacho más
+        antiguo al más reciente. Lo no recibido de un traslado ya recibido no aparece aquí: es una discrepancia
+        (`/transfer-discrepancies`). Origen + en tránsito + destino cuadra con el kardex.
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor` (solo lectura).
+      parameters:
+        - { name: warehouse_id, in: query, description: Bodega origen **o** destino, schema: { type: integer } }
+        - { name: origin_warehouse_id, in: query, schema: { type: integer } }
+        - { name: destination_warehouse_id, in: query, schema: { type: integer } }
+        - { name: product_id, in: query, schema: { type: integer } }
+        - { name: lot_id, in: query, schema: { type: integer } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de stock en tránsito
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/InTransitStock' }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
   /transfers:
     get:
       tags: [Traslados]
@@ -926,6 +961,24 @@ components:
         id: { type: integer }
         lot_number: { type: string }
         expires_at: { type: string, format: date }
+
+    InTransitStock:
+      type: object
+      properties:
+        transfer_id: { type: integer }
+        transfer_item_lot_id: { type: integer }
+        dispatched_at: { type: string, format: date-time }
+        origin_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        destination_warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        product: { $ref: '#/components/schemas/ProductSummary' }
+        lot:
+          type: object
+          properties:
+            id: { type: integer }
+            lot_number: { type: string }
+            expires_at: { type: string, format: date }
+            is_expired: { type: boolean, description: 'Puede vencer en el camino; igual se recibe (S-48)' }
+        quantity: { type: integer, minimum: 1, description: Unidades despachadas de ese lote que van en camino }
 
     TransferRequest:
       type: object
