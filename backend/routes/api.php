@@ -6,6 +6,7 @@ use App\Http\Controllers\DispensationController;
 use App\Http\Controllers\InventoryAdjustmentController;
 use App\Http\Controllers\KardexController;
 use App\Http\Controllers\PatientController;
+use App\Http\Controllers\PrescriptionController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TransferController;
 use App\Http\Controllers\TransferDiscrepancyController;
@@ -74,5 +75,6 @@ Route::prefix('v1')->group(function (): void {
         Route::get('patients/{patient}', [PatientController::class, 'show'])->name('patients.show');
         Route::get('patients/{patient}/prescriptions', [PatientController::class, 'prescriptions'])
             ->name('patients.prescriptions');
+        Route::post('prescriptions', [PrescriptionController::class, 'store'])->name('prescriptions.store');
     });
 });
