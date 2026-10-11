@@ -2,9 +2,11 @@
 
 namespace App\Policies;
 
+use App\Domain\Exceptions\SegregationOfDutiesException;
 use App\Enums\Role;
 use App\Models\Transfer;
 use App\Models\User;
+use Illuminate\Auth\Access\Response;
 
 /**
  * Permisos de traslados (CLAUDE.md §5, S-49). Siempre usuario activo (S-37).
@@ -12,8 +14,8 @@ use App\Models\User;
  * - Ver: auxiliar, regente y auditor (solo lectura).
  * - Crear, despachar y recibir: auxiliar y regente.
  * - Solicitar (enviar el borrador): solo quien lo creó.
- * - Aprobar: regente. Que sea distinto del solicitante (RN-08) lo valida
- *   TransferService con el error específico SEGREGACION_FUNCIONES.
+ * - Aprobar: regente distinto del solicitante (RN-08); si es el solicitante
+ *   se niega con SEGREGACION_FUNCIONES (BusinessDenial).
  * - Anular: quien lo creó o un regente.
  */
 class TransferPolicy
@@ -38,9 +40,23 @@ class TransferPolicy
         return $this->isPharmacyStaff($user) && $user->id === $transfer->requested_by;
     }
 
-    public function approve(User $user, Transfer $transfer): bool
+    /**
+     * RN-08: regente activo y distinto de quien solicitó. Si es quien
+     * solicitó, niega con SEGREGACION_FUNCIONES (no con NO_AUTORIZADO): el
+     * rol sí lo tiene, lo que falla es la segregación. TransferService y la
+     * BD lo vuelven a exigir.
+     */
+    public function approve(User $user, Transfer $transfer): Response
     {
-        return $user->isActiveWithRole(Role::RegenteFarmacia);
+        if (! $user->isActiveWithRole(Role::RegenteFarmacia)) {
+            return Response::deny();
+        }
+
+        if ($user->id === $transfer->requested_by) {
+            return BusinessDenial::because(SegregationOfDutiesException::sameUser('aprobar el traslado'));
+        }
+
+        return Response::allow();
     }
 
     public function dispatch(User $user, Transfer $transfer): bool

@@ -2,9 +2,11 @@
 
 namespace App\Http\Resources;
 
+use App\Domain\Transfers\TransferActions;
 use App\Models\Transfer;
 use App\Models\TransferItem;
 use App\Models\TransferItemLot;
+use App\Models\User;
 use App\Models\Warehouse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -80,7 +82,20 @@ class TransferResource extends JsonResource
             'cancelled_at' => $this->cancelled_at?->toIso8601String(),
             'cancellation_reason' => $this->cancellation_reason,
             'created_at' => $this->created_at?->toIso8601String(),
+            // Acciones que el usuario actual puede ejecutar ya (Policy + estado):
+            // el frontend decide qué botones mostrar. El endpoint vuelve a validar.
+            'allowed_actions' => $this->allowedActions($request),
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function allowedActions(Request $request): array
+    {
+        $user = $request->user();
+
+        return $user instanceof User ? app(TransferActions::class)->allowedFor($user, $this->resource) : [];
     }
 
     /**

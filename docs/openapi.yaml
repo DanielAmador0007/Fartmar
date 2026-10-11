@@ -392,7 +392,8 @@ paths:
       tags: [Traslados]
       summary: Aprobar (SOLICITADO → APROBADO)
       description: |
-        Solo `regente_farmacia` activo **distinto** de quien solicitó (RN-08). La BD lo vuelve a exigir
+        Solo `regente_farmacia` activo **distinto** de quien solicitó (RN-08). Lo niega `TransferPolicy` (con
+        `SEGREGACION_FUNCIONES`, no `NO_AUTORIZADO`), lo repite el servicio y la BD lo vuelve a exigir
         (CHECK `approved_by <> requested_by` y trigger de rol). Dos aprobaciones simultáneas: una gana, la otra 409.
       parameters:
         - $ref: '#/components/parameters/TransferId'
@@ -1005,6 +1006,14 @@ components:
         cancelled_at: { type: [string, 'null'], format: date-time }
         cancellation_reason: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
+        allowed_actions:
+          type: array
+          description: |
+            Acciones que el usuario autenticado puede ejecutar ahora sobre el traslado: transición válida desde el estado
+            actual **y** permitida por `TransferPolicy` (p. ej. el regente que solicitó no recibe `approve`). Solo informa
+            qué botones mostrar; cada endpoint vuelve a autorizar y validar.
+          items: { type: string, enum: [submit, approve, dispatch, receive, cancel] }
+          example: [approve, cancel]
 
     TransferDiscrepancy:
       type: object

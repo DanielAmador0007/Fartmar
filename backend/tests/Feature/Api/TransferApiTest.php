@@ -5,12 +5,15 @@
 | flujo completo por HTTP. La lógica fina está en TransferServiceTest.
 */
 
+use App\Domain\Transfers\TransferService;
 use App\Models\KardexMovement;
 use App\Models\Transfer;
 use App\Models\TransferDiscrepancy;
 use App\Models\TransferItemLot;
 use App\Models\User;
+use App\Policies\BusinessDenial;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Gate;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\TransferScenario;
 
@@ -324,4 +327,82 @@ it('M5 por HTTP: el regente que recibió no resuelve la discrepancia (403 SEGREG
     test()->postJson("/api/v1/transfer-discrepancies/{$discrepancyId}/resolve", ['action' => 'PERDIDA', 'resolution' => 'Caja rota'])
         ->assertOk()
         ->assertJsonPath('data.resolved_by.id', $s->regente2->id);
+});
+
+it('M6: la Policy niega aprobar al solicitante con SEGREGACION_FUNCIONES (sin lanzar en Gate::allows)', function () {
+    $s = TransferScenario::make();
+    $service = app(TransferService::class);
+    $transfer = $service->submit($service->create($s->regente, $s->data()), $s->regente);
+
+    $response = Gate::forUser($s->regente)->inspect('approve', $transfer);
+    expect($response->denied())->toBeTrue()
+        ->and($response)->toBeInstanceOf(BusinessDenial::class)
+        ->and($response->code())->toBe('SEGREGACION_FUNCIONES')
+        ->and(Gate::forUser($s->regente)->allows('approve', $transfer))->toBeFalse()
+        ->and(Gate::forUser($s->regente2)->allows('approve', $transfer))->toBeTrue()
+        // Sin rol: negación genérica (NO_AUTORIZADO), no de segregación.
+        ->and(Gate::forUser($s->auxiliar)->inspect('approve', $transfer))->not->toBeInstanceOf(BusinessDenial::class);
+});
+
+/**
+ * Traslado del escenario llevado hasta $state por el servicio real.
+ * El auxiliar crea/solicita/despacha; regente aprueba.
+ */
+function transferInState(TransferScenario $s, string $state): Transfer
+{
+    $service = app(TransferService::class);
+
+    return match ($state) {
+        'BORRADOR' => $service->create($s->auxiliar, $s->data()),
+        'SOLICITADO' => $s->requested(),
+        'APROBADO' => $s->approved(),
+        'EN_TRANSITO' => $s->dispatched(),
+        'RECIBIDO' => $service->receive($s->dispatched(), $s->auxiliar, TransferItemLot::query()->pluck('quantity_dispatched', 'id')->map(fn ($q) => (int) $q)->all()),
+        'ANULADO' => $service->cancel($s->requested(), $s->auxiliar, 'Ya no se necesita'),
+        default => throw new InvalidArgumentException($state),
+    };
+}
+
+it('M6: allowed_actions combina Policy y estado para el usuario actual', function (string $state, string $who, array $expected) {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = transferInState($s, $state);
+    $users = [
+        'creador' => $s->auxiliar,
+        'otro_auxiliar' => User::factory()->auxiliar()->create(),
+        'regente' => $s->regente2,
+        'auditor' => User::factory()->auditor()->create(),
+    ];
+
+    Sanctum::actingAs($users[$who]);
+    test()->getJson("/api/v1/transfers/{$transfer->id}")
+        ->assertOk()
+        ->assertJsonPath('data.allowed_actions', $expected);
+})->with([
+    'BORRADOR / creador' => ['BORRADOR', 'creador', ['submit', 'cancel']],
+    'BORRADOR / otro auxiliar' => ['BORRADOR', 'otro_auxiliar', []],
+    'BORRADOR / regente' => ['BORRADOR', 'regente', ['cancel']],
+    'SOLICITADO / creador' => ['SOLICITADO', 'creador', ['cancel']],
+    'SOLICITADO / regente' => ['SOLICITADO', 'regente', ['approve', 'cancel']],
+    'APROBADO / otro auxiliar' => ['APROBADO', 'otro_auxiliar', ['dispatch']],
+    'APROBADO / regente' => ['APROBADO', 'regente', ['dispatch', 'cancel']],
+    'EN_TRANSITO / otro auxiliar' => ['EN_TRANSITO', 'otro_auxiliar', ['receive']],
+    'EN_TRANSITO / auditor' => ['EN_TRANSITO', 'auditor', []],
+    'RECIBIDO / regente' => ['RECIBIDO', 'regente', []],
+    'ANULADO / creador' => ['ANULADO', 'creador', []],
+]);
+
+it('M6: el regente que solicitó no ve "approve" en allowed_actions; otro regente sí', function () {
+    $s = TransferScenario::make();
+    Sanctum::actingAs($s->regente);
+    $id = test()->postJson('/api/v1/transfers', $s->payload())->assertCreated()->json('data.id');
+
+    test()->postJson("/api/v1/transfers/{$id}/submit")
+        ->assertOk()
+        ->assertJsonPath('data.allowed_actions', ['cancel']);
+
+    Sanctum::actingAs($s->regente2);
+    test()->getJson("/api/v1/transfers/{$id}")->assertJsonPath('data.allowed_actions', ['approve', 'cancel']);
+
+    // También en el listado.
+    test()->getJson('/api/v1/transfers')->assertJsonPath('data.0.allowed_actions', ['approve', 'cancel']);
 });

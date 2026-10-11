@@ -4,6 +4,8 @@ namespace App\Http;
 
 use App\Database\PostgresError;
 use App\Domain\Exceptions\BusinessRuleException;
+use App\Policies\BusinessDenial;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
@@ -46,6 +48,13 @@ final class ApiErrorRenderer
             }
         }
 
+        // Policy que negó por una regla de negocio (BusinessDenial): mismo
+        // JSON que si el servicio hubiera lanzado la excepción de dominio.
+        $denial = self::businessDenial($e);
+        if ($denial !== null) {
+            $e = $denial;
+        }
+
         return match (true) {
             $e instanceof BusinessRuleException => self::error($e->httpStatus(), $e->errorCode(), $e->getMessage(), $e->details()),
             $e instanceof ValidationException => self::error(422, 'VALIDACION', 'Hay datos inválidos o incompletos en la solicitud.', ['fields' => $e->errors()]),
@@ -62,6 +71,22 @@ final class ApiErrorRenderer
             config('app.debug') !== true => self::error(500, 'ERROR_INTERNO', 'Ocurrió un error inesperado. Intente de nuevo o contacte a soporte.'),
             default => null,
         };
+    }
+
+    /**
+     * Laravel envuelve la AuthorizationException en AccessDeniedHttpException
+     * (la original queda como "previous").
+     */
+    private static function businessDenial(Throwable $e): ?BusinessRuleException
+    {
+        $authorization = $e instanceof AuthorizationException ? $e : $e->getPrevious();
+        if (! $authorization instanceof AuthorizationException) {
+            return null;
+        }
+
+        $response = $authorization->response();
+
+        return $response instanceof BusinessDenial ? $response->exception : null;
     }
 
     /**
