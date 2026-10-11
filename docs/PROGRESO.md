@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-11, al cerrar la Fase 3.
+> Última actualización: 2026-10-11, al cerrar la Fase 4.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -24,9 +24,9 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 0 Andamiaje | ✅ Hecha | Laravel 13.35 / PHP 8.4, Vite 8 + React 19, compose `fartmar`, CI, `/health` `/ready` |
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
 | 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR #1, mergeado) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
-| 3 Traslados, ajustes, alertas | ✅ Hecha (PR `feat/fase-3-traslados`) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
-| 4 Seguridad y privacidad | ⏭️ **Siguiente** | seguridad-privacidad; ver "Pendientes de seguridad" abajo |
-| 5 Frontend | Pendiente | |
+| 3 Traslados, ajustes, alertas | ✅ Hecha (PR #2, mergeado) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
+| 4 Seguridad y privacidad | ✅ Hecha (PR `feat/fase-4-seguridad`) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
+| 5 Frontend | ⏭️ **Siguiente** | frontend-react; ver "Lo que las fases siguientes deben saber de la Fase 4" |
 | 6 Asistente IA | Pendiente | |
 | 7 DevOps completo | Pendiente | |
 | 8 Documentación y cierre | Pendiente | |
@@ -48,6 +48,27 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+
+## Lo que las fases siguientes deben saber de la Fase 4
+
+- **Frontend (Fase 5):**
+  - Login y `GET /auth/me` devuelven `must_change_password`. Si es true, toda la API responde 403
+    `CAMBIO_CLAVE_REQUERIDO` salvo `auth/password`, `auth/me` y `auth/logout`: hay que mostrar la pantalla de cambio
+    de clave (`POST /auth/password`: actual + nueva confirmada, 12 caracteres a 72 bytes). Los usuarios demo tienen
+    la marca en false.
+  - Búsqueda de pacientes por **POST** `/patients/search` (`document_type`, `document_number`; S-69), con límite
+    de 30 por minuto. Después `GET /patients/{id}/prescriptions` (por línea: prescrito, entregado, reservado,
+    disponible) para armar la dispensación.
+  - Para el auditor, `PatientResource.masked=true`, y `instructions`/`rejection_reason` salen `null`: la UI debe
+    tolerar esos nulos.
+  - Cada respuesta trae `X-Correlation-Id`; mostrarlo en los mensajes de error ayuda a soportar incidentes.
+  - Endpoints de admin: `GET/POST /users`, `PATCH /users/{id}` (rol, is_active, nombre, password temporal).
+- **Asistente IA (Fase 6):** las herramientas no deben devolver datos de pacientes; reutilizar el procesador
+  `app/Logging/RedactSensitiveData` y no loguear prompts con PII.
+- **DevOps (Fase 7):** el canal de log predeterminado es `json` (stderr). El canal `emergency` no admite tap de
+  redacción (S-73). Falta configurar `TrustProxies` detrás de Nginx (IP real en bitácoras y limitadores), el formato
+  JSON del access log de Nginx y los headers de seguridad.
+- `docs/openapi.yaml` está en 0.4.0 con todos los endpoints de `route:list`.
 
 ## Lo que las fases siguientes deben saber de la Fase 3
 
@@ -109,23 +130,22 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - Cambiar `APP_KEY` o `PATIENT_HASH_KEY` invalida documentos cifrados/hashes (sin rutina de re-cifrado).
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
 
-### Pendientes de seguridad detectados en la revisión de la Fase 2 (para Fase 4 / 7)
+### Pendientes de seguridad abiertos (revisiones de las Fases 2 y 4)
 
-- **[Alto · Fase 4] PII y secretos en logs de excepciones:** `QueryException` incluye el SQL **con los valores**
-  (se vio en pruebas: un INSERT de `users` con correo y hash de contraseña). Laravel lo registra al reportar un 500.
-  Falta el procesador Monolog que redacte claves sensibles y los valores de SQL, y logs JSON a stdout
-  (hoy `LOG_CHANNEL=stderr` en texto plano).
+Resueltos en la Fase 4: PII en logs de excepciones, correlation id, login fallido auditado, pacientes con
+enmascarado y bitácora, revocación de tokens, enumeración de correos por tiempo y primer login lento.
+
 - **[Alto · Fase 7] `APP_DEBUG=true` por defecto** en `docker-compose.yml` y `.env.example` (correcto para demo
   local). La imagen/compose de producción debe forzar `APP_ENV=production` y `APP_DEBUG=false`; con debug activo
   cualquier 500 no capturado expone SQL y host. El renderizador ya responde `ERROR_INTERNO` si debug está apagado (S-44).
-- **[Medio · Fase 4] Middleware `X-Correlation-Id`:** `correlation_id` de dispensaciones, kardex y `audit_logs`
-  sigue en `null`; `audit_logs.ip` también (nadie llena `Context::get('ip')`).
-- **[Medio · Fase 4] Intentos de login fallidos no se auditan** (solo los exitosos y el logout). Agregar
-  `auth.login_failed` en `audit_logs` sin el correo en claro (p. ej. HMAC del correo) para detectar fuerza bruta.
-- **[Medio · Fase 4] `patient_access_logs`, endpoint de pacientes y enmascarado para auditor (`PatientMasker`):**
-  aún no existen. Hoy ningún Resource expone datos del paciente (solo `patient_id`), verificado en pruebas.
-- **[Medio · Fase 4] Al desactivar un usuario (CRUD de admin), revocar sus tokens** además de la verificación de
-  `is_active` en cada petición (S-41). Prueba de matriz `AuthorizationMatrixTest` debe ampliarse con cada endpoint nuevo.
+- **[Medio] Riesgo residual del admin (S-77):** puede crear un médico o un regente, entrar una vez con la clave
+  temporal y cambiarla. Queda auditado (`user.created` con el rol, `user.password_changed`), pero no se impide.
+- **[Bajo] Redacción de strings sin clave sensible** (`RedactSensitiveData`): solo enmascara correos dentro de textos
+  libres; un documento bajo una clave como `input` o `value` pasaría tal cual.
+- **[Bajo] Dos admins pueden desactivarse entre sí a la vez** y dejar el sistema sin administradores activos.
+- **[Bajo] Decisión de auditar la búsqueda sin resultado en `PatientController`**: debería vivir en un servicio de dominio.
+- **[Bajo] Sin retención de `audit_logs`**; cada login fallido agrega una fila. Prescripciones sin edición/anulación
+  por API y lista por paciente limitada a 50.
 - **[Bajo] Enumeración de ids por rol sin permiso:** un médico recibe 404 por una dispensación inexistente y 403 por
   una existente (el binding resuelve antes de la Policy). Solo revela que el id existe, sin datos.
 - **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
