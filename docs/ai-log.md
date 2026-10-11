@@ -389,3 +389,28 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Cada error de negocio esperado (credenciales inválidas, stock insuficiente…) se escribía en el log como `error` con traza. Son respuestas normales, no fallas; lo sensible ya queda en `audit_logs`.
 - Puntos que Daniel debe revisar/entender: los 500 reales (bugs, BD caída) siguen registrándose; solo se excluyen las subclases de `BusinessRuleException`.
 - Riesgos o cosas que podrían estar mal: si alguien quiere métricas de errores de negocio desde los logs, ya no estarán ahí (habría que sacarlas de `audit_logs` o agregar un contador).
+
+### 2026-10-11 — Fase 4: corrección de los hallazgos del revisor-senior
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - **A1** `LoginService::dummyHash()`: constante bcrypt de costo 12 (de un valor aleatorio descartado) y, con otro costo, `Cache::rememberForever` con el costo en la clave. Pruebas en `AuthHardeningTest` con un proxy de Mockery sobre el `HashManager` real (`shouldNotReceive('make')` con costo 12; `make` una sola vez en 3 logins con costo 5).
+  - **A2** migración `2026_10_11_120000_add_must_change_password_to_users`, `EnsurePasswordIsChanged`, `PasswordChangeRequiredException` (403 `CAMBIO_CLAVE_REQUERIDO`), `ChangePasswordRequest`, `POST /auth/password` (`AuthController::changePassword` → `UserManagementService::changeOwnPassword`), restablecer por `PATCH /users/{id}` con `password`, limitador `password` (5/min), `must_change_password` en `UserResource`, seeders y factory en `false`. Pruebas en `tests/Feature/Security/PasswordChangeTest.php`, `UserAdminApiTest` y la matriz.
+  - **B3** `App\Http\Requests\PasswordRules` (12+, letras y números, ≤ 72 bytes con `strlen`) usado en crear, restablecer y cambiar.
+  - **M1** tap `UseRedaction` en slack, papertrail, syslog y errorlog; prueba que recorre `config('logging.channels')`.
+  - **M2** `instructions` y `rejection_reason` en `null` para quien no tiene `viewUnmasked`.
+  - **M3** migración `2026_10_11_120100_add_dispensation_view_access_action` y registro `patient.dispensation_view` en `DispensationController::show`; pruebas de 403/404 sin registro (y **B6** para `GET /patients/{id}` inexistente).
+  - **B7** limitador `patient-search` (30/min por usuario). **B4** `users_email_unique` → 422 `VALIDACION`. **B1** correlation id siempre del servidor; el del cliente va como `client_correlation_id` y `X-Client-Correlation-Id`.
+  - **M4** `docs/openapi.yaml` 0.4.0; validado con PyYAML en el host (no hay `symfony/yaml` en `vendor` y no se agregó una dependencia solo para esto): parsea, los 36 `$ref` resuelven y las 29 rutas de `route:list` están documentadas.
+- Qué decisión tomó y por qué:
+  - A2 en lo mínimo defendible: la clave temporal no evita que el admin entre UNA vez como el usuario creado y la cambie, pero sí que la use indefinidamente sin dejar `user.password_changed`. El riesgo residual queda en S-77.
+  - Restablecer va por el mismo `PATCH /users/{id}` (campo `password`) en vez de un endpoint nuevo, con acción de auditoría propia `user.password_reset`.
+  - `emergency` queda sin tap: Laravel lo construye sin taps y solo lo usa si un canal no se puede crear (documentado en S-73).
+  - Al mapear `users_email_unique` a 422 (B4), la prueba "un 500 por QueryException no deja PII" dejó de producir un 500; se cambió a un paciente duplicado, que además trae nombres, teléfono y documento en el INSERT (prueba más fuerte). La corrección va en el commit de B1 porque el commit de B4 la dejó roja (se detectó al correr las pruebas afectadas).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué el hash de relleno debe tener el **mismo costo** que las contraseñas reales y por qué la estática anterior no servía con el servidor embebido de PHP (cada petición es un proceso nuevo).
+  - `EnsurePasswordIsChanged` va en el grupo autenticado después de `auth:sanctum`; las rutas permitidas se identifican por nombre (`auth.password`, `auth.me`, `auth.logout`).
+  - Los textos libres ocultos usan la misma Policy (`viewUnmasked`) que el enmascarado del paciente.
+- Riesgos o cosas que podrían estar mal:
+  - El admin sigue siendo de confianza (S-77).
+  - La medición por HTTP en el servidor embebido tiene picos en la primera petición de cada worker (arranque del proceso), sin relación con el hash; en régimen estable correo existente e inexistente rondan 0,33 s.
+  - El commit `7cda64c` (B4) deja una prueba en rojo hasta `768fd99` (B1); si se hace `git bisect`, tenerlo en cuenta.
