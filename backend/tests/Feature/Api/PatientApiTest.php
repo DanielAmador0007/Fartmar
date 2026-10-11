@@ -239,3 +239,34 @@ it('leer pacientes no deja datos personales en los logs', function () {
         expect($output)->not->toContain($leak);
     }
 });
+
+/*
+| Revisión de la Fase 4 (M2): textos libres ocultos para el auditor.
+*/
+
+it('el auditor no ve las indicaciones de la prescripción (texto libre); farmacia y médico sí', function (Role $role, ?string $expected) {
+    $s = DispensingScenario::make();
+    $s->item->update(['instructions' => 'Paciente embarazada: 1 cada 12 horas']);
+    actingAsRole($role);
+
+    $this->getJson("/api/v1/patients/{$s->patient->id}/prescriptions")
+        ->assertOk()
+        ->assertJsonPath('data.0.items.0.instructions', $expected);
+})->with([
+    'auditor' => [Role::Auditor, null],
+    'médico' => [Role::Medico, 'Paciente embarazada: 1 cada 12 horas'],
+    'auxiliar' => [Role::AuxiliarFarmacia, 'Paciente embarazada: 1 cada 12 horas'],
+]);
+
+it('el auditor no ve el motivo de rechazo de una dispensación (texto libre); el regente sí', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
+    $service = app(DispenseService::class);
+    $pending = $service->create($s->auxiliar, $s->data(2), (string) Str::uuid())->dispensation;
+    $service->reject($pending, $s->regente, 'Paciente Juana sin documento');
+
+    actingAsRole(Role::Auditor);
+    $this->getJson("/api/v1/dispensations/{$pending->id}")->assertOk()->assertJsonPath('data.rejection_reason', null);
+
+    Sanctum::actingAs($s->regente2);
+    $this->getJson("/api/v1/dispensations/{$pending->id}")->assertOk()->assertJsonPath('data.rejection_reason', 'Paciente Juana sin documento');
+});

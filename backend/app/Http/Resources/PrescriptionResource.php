@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\Patient;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
 use Illuminate\Http\Request;
@@ -20,6 +21,10 @@ class PrescriptionResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        // Las indicaciones son texto libre del médico y pueden traer datos
+        // clínicos o personales: el auditor (enmascarado) no las ve.
+        $showFreeText = $request->user()?->can('viewUnmasked', Patient::class) ?? false;
+
         return [
             'id' => $this->id,
             'number' => $this->number,
@@ -29,7 +34,7 @@ class PrescriptionResource extends JsonResource
             'issued_at' => $this->issued_at->toIso8601String(),
             'valid_until' => $this->valid_until->toDateString(),
             'prescriber' => new UserSummaryResource($this->whenLoaded('prescriber')),
-            'items' => $this->whenLoaded('items', fn () => $this->items->map(function (PrescriptionItem $item): array {
+            'items' => $this->whenLoaded('items', fn () => $this->items->map(function (PrescriptionItem $item) use ($showFreeText): array {
                 $reserved = (int) ($item->quantity_reserved ?? 0);
 
                 return [
@@ -44,7 +49,7 @@ class PrescriptionResource extends JsonResource
                     'quantity_dispensed' => $item->quantity_dispensed,
                     'quantity_reserved' => $reserved,
                     'quantity_available' => max(0, $item->remainingQuantity() - $reserved),
-                    'instructions' => $item->instructions,
+                    'instructions' => $showFreeText ? $item->instructions : null,
                 ];
             })->values()),
         ];

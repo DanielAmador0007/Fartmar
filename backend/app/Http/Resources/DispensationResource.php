@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use App\Models\Dispensation;
 use App\Models\DispensationItem;
 use App\Models\DispensationItemLot;
+use App\Models\Patient;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -71,7 +72,9 @@ class DispensationResource extends JsonResource
             'authorized_at' => $this->authorized_at?->toIso8601String(),
             'rejected_by' => $this->rejected_by ? new UserSummaryResource($this->whenLoaded('rejecter')) : null,
             'rejected_at' => $this->rejected_at?->toIso8601String(),
-            'rejection_reason' => $this->rejection_reason,
+            // Texto libre del regente (puede mencionar al paciente): oculto para
+            // quien ve los datos de pacientes enmascarados (auditor).
+            'rejection_reason' => ($request->user()?->can('viewUnmasked', Patient::class) ?? false) ? $this->rejection_reason : null,
             'created_at' => $this->created_at->toIso8601String(),
         ];
     }
