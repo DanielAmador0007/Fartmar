@@ -8,10 +8,15 @@ use App\Domain\Exceptions\AdjustmentNotValidException;
 use App\Domain\Exceptions\InsufficientStockException;
 use App\Domain\Exceptions\SegregationOfDutiesException;
 use App\Domain\Inventory\AdjustmentService;
+use App\Domain\Inventory\AlertService;
+use App\Domain\Transfers\TransferService;
+use App\Enums\DiscrepancyResolution;
 use App\Enums\KardexType;
 use App\Models\AuditLog;
 use App\Models\KardexMovement;
 use App\Models\Lot;
+use App\Models\TransferDiscrepancy;
+use App\Models\TransferItemLot;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Support\ConcurrentDispenser;
@@ -111,3 +116,48 @@ it('solo un regente activo ajusta', function (Closure $user) {
     'auxiliar' => [fn () => User::factory()->auxiliar()->create()],
     'regente inactivo' => [fn () => User::factory()->regente()->create(['is_active' => false])],
 ]);
+
+/*
+| L4 (revisión de la Fase 3, S-56): un AJUSTE POSITIVO sobre un lote vencido
+| se permite. Registra unidades físicas que existen (sobrante de conteo o
+| reintegro de un faltante); RN-01 sigue impidiendo dispensarlas o
+| trasladarlas, y quedan en alertas como vencidas para darlas de baja.
+*/
+
+it('L4: un ajuste positivo de un lote vencido se registra, pero el lote no entra en FEFO', function () {
+    $s = TransferScenario::make([[-3, 2], [60, 5]]);
+    [$expired, $valid] = $s->lots;
+
+    $movement = adjustments()->adjust($s->regente, $s->origin->id, $expired->id, 4, 'Conteo físico: 4 cajas vencidas sin registrar');
+
+    expect($movement->direction)->toBe(1)
+        ->and($movement->balance_after)->toBe(6)
+        ->and($s->stockAt($s->origin, $expired))->toBe(6);
+
+    // RN-01: lo disponible para despachar sigue siendo solo el lote vigente.
+    $transfer = app(TransferService::class)->dispatch($s->approved(5), $s->auxiliar);
+    expect($transfer->items()->sole()->lots()->pluck('lot_id')->all())->toBe([$valid->id])
+        ->and($s->stockAt($s->origin, $expired))->toBe(6);
+
+    // Y aparece en alertas como vencido.
+    $alert = collect(app(AlertService::class)->expiringLots($s->origin->id))
+        ->first(fn ($a) => $a->stock->lot_id === $expired->id);
+    expect($alert?->isExpired())->toBeTrue();
+});
+
+it('L4: REINTEGRAR_ORIGEN de un lote que venció en tránsito devuelve las unidades al origen (vencidas)', function () {
+    $s = TransferScenario::make([[1, 10]]);
+    $transfer = $s->dispatched(5);
+    $service = app(TransferService::class);
+
+    $this->travel(3)->days(); // El lote vence mientras viaja.
+
+    $itemLot = TransferItemLot::query()->sole();
+    $service->receive($transfer, $s->auxiliar, [$itemLot->id => 3]);
+    $discrepancy = TransferDiscrepancy::query()->sole();
+    $service->resolveDiscrepancy($discrepancy, $s->regente2, DiscrepancyResolution::ReintegrarOrigen, 'Las 2 cajas nunca salieron');
+
+    expect($s->stockAt($s->origin, $s->lots[0]))->toBe(7)
+        ->and(KardexMovement::query()->where('type', KardexType::Ajuste)->sole()->direction)->toBe(1)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});

@@ -19,7 +19,11 @@ use Illuminate\Support\Facades\DB;
  * siempre con motivo (también lo exige un CHECK del kardex).
  *
  * - Cantidad positiva: suma unidades (p. ej. conteo físico mayor). Si la
- *   bodega no tenía ese lote, se crea la existencia.
+ *   bodega no tenía ese lote, se crea la existencia. Se permite también
+ *   sobre un lote VENCIDO (S-56): registrar unidades que existen no es
+ *   dispensar ni trasladar; RN-01 las sigue excluyendo de FEFO y aparecen
+ *   en alertas como vencidas (p. ej. REINTEGRAR_ORIGEN de un lote que
+ *   venció en tránsito).
  * - Cantidad negativa: resta. Puede retirar un lote VENCIDO (baja por
  *   vencimiento, S-35). Nunca deja stock negativo: StockService bloquea la
  *   fila y lanza STOCK_INSUFICIENTE si no hay suficientes (y el CHECK de la
