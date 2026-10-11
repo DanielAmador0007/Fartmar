@@ -380,3 +380,12 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
 - Riesgos o cosas que podrían estar mal:
   - Si se renombra un trigger o cambia el prefijo del mensaje, el mapeo vuelve a 500 sin avisar (hay prueba con el trigger de transición real).
   - El asistente IA (Fase 6) aún no existe: queda pendiente verificar que ninguna herramienta devuelva datos de pacientes.
+
+### 2026-10-11 — Fase 4: hallazgos de la prueba manual en el contenedor
+- Agente: seguridad-privacidad
+- Qué generó la IA: `redirectGuestsTo(fn () => null)` y `dontReport(BusinessRuleException::class)` en `bootstrap/app.php`, con dos pruebas en `LoggingPrivacyTest`.
+- Qué decisión tomó y por qué:
+  - Al recrear el contenedor con logs JSON, `curl /api/v1/auth/me` (sin token y sin `Accept: application/json`) respondió **500**: el middleware `Authenticate` intentaba redirigir a la ruta `login`, que no existe en una API solo con token. Venía de antes (las pruebas siempre usan `getJson`). Ahora es 401 `NO_AUTENTICADO`.
+  - Cada error de negocio esperado (credenciales inválidas, stock insuficiente…) se escribía en el log como `error` con traza. Son respuestas normales, no fallas; lo sensible ya queda en `audit_logs`.
+- Puntos que Daniel debe revisar/entender: los 500 reales (bugs, BD caída) siguen registrándose; solo se excluyen las subclases de `BusinessRuleException`.
+- Riesgos o cosas que podrían estar mal: si alguien quiere métricas de errores de negocio desde los logs, ya no estarán ahí (habría que sacarlas de `audit_logs` o agregar un contador).
