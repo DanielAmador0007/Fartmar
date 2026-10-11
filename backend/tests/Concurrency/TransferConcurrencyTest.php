@@ -11,14 +11,18 @@
 */
 
 use App\Domain\Transfers\TransferService;
+use App\Enums\DiscrepancyResolution;
+use App\Enums\DiscrepancyStatus;
 use App\Enums\KardexType;
 use App\Enums\TransferStatus;
+use App\Models\AuditLog;
 use App\Models\KardexMovement;
 use App\Models\Prescription;
 use App\Models\PrescriptionItem;
 use App\Models\Product;
 use App\Models\Stock;
 use App\Models\Transfer;
+use App\Models\TransferDiscrepancy;
 use App\Models\TransferItemLot;
 use App\Models\User;
 use App\Models\Warehouse;
@@ -194,5 +198,204 @@ it('sin deadlocks: traslados y dispensaciones de dos productos en orden inverso 
         ->and($s->totalAt($s->origin, $a))->toBe(28)
         ->and($s->totalAt($s->origin, $b))->toBe(28)
         ->and(Stock::query()->where('quantity', '<', 0)->count())->toBe(0)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});
+
+/**
+ * Lotes despachados de un traslado, en orden de id (FEFO: el que vence antes primero).
+ *
+ * @return list<TransferItemLot>
+ */
+function dispatchedLotsOf(Transfer $transfer): array
+{
+    return TransferItemLot::query()
+        ->whereIn('transfer_item_id', $transfer->items()->select('id'))
+        ->orderBy('id')
+        ->get()
+        ->all();
+}
+
+/**
+ * Job de recepción: $quantities en el mismo orden que dispatchedLotsOf().
+ *
+ * @param  list<TransferItemLot>  $lots
+ * @param  list<int>  $quantities
+ * @return array<string, mixed>
+ */
+function receiveJob(User $user, Transfer $transfer, array $lots, array $quantities, bool $unsafe = false): array
+{
+    return [
+        'mode' => 'transfer-receive',
+        'user_id' => $user->id,
+        'transfer_id' => $transfer->id,
+        'received' => array_map(fn (TransferItemLot $lot, int $q) => [$lot->id, $q], $lots, $quantities),
+        'unsafe' => $unsafe,
+    ];
+}
+
+/**
+ * Lo que debe quedar tras UNA sola recepción con $quantities (la del ganador).
+ *
+ * @param  list<TransferItemLot>  $lots
+ * @param  list<int>  $quantities
+ */
+function expectSingleReceipt(TransferScenario $s, Transfer $transfer, array $lots, array $quantities, int $receiverId): void
+{
+    $missing = 0;
+
+    foreach ($lots as $i => $itemLot) {
+        $q = $quantities[$i];
+        $missing += $itemLot->quantity_dispatched - $q;
+
+        // Una sola ENTRADA_TRASLADO por lote (ninguna si llegó 0), con lo que declaró el ganador.
+        $entries = KardexMovement::query()->where('type', KardexType::EntradaTraslado)->where('lot_id', $itemLot->lot_id);
+        expect((clone $entries)->count())->toBe($q > 0 ? 1 : 0)
+            ->and((int) (clone $entries)->sum('quantity'))->toBe($q)
+            ->and($itemLot->fresh()?->quantity_received)->toBe($q)
+            ->and($s->stockAt($s->destination, $itemLot->lot))->toBe($q)
+            ->and(TransferDiscrepancy::query()->where('transfer_item_lot_id', $itemLot->id)->count())
+            ->toBe($itemLot->quantity_dispatched > $q ? 1 : 0);
+    }
+
+    $fresh = $transfer->fresh();
+    expect($fresh?->status)->toBe($missing === 0 ? TransferStatus::Recibido : TransferStatus::RecibidoParcial)
+        ->and($fresh?->received_by)->toBe($receiverId)
+        ->and((int) TransferDiscrepancy::query()->sum('quantity_missing'))->toBe($missing)
+        ->and(AuditLog::query()->where('action', 'transfer.received')->count())->toBe(1)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+}
+
+it('RN-07: 4 procesos reciben a la vez el MISMO traslado con cantidades distintas — una sola recepción, una ENTRADA_TRASLADO por lote', function () {
+    // FEFO: 2 u. del lote que vence a 10 días y 3 del de 90 días.
+    $s = TransferScenario::make([[10, 2], [90, 10]]);
+    $transfer = $s->dispatched(5);
+    $lots = dispatchedLotsOf($transfer);
+    expect($lots)->toHaveCount(2);
+
+    // Cada proceso declara algo distinto: así se comprueba que lo que quedó
+    // en la BD es EXACTAMENTE lo del ganador, sin mezclas entre procesos.
+    $receipts = [
+        [$s->auxiliar, [2, 3]],
+        [$s->regente, [2, 1]],
+        [$s->regente2, [0, 3]],
+        [User::factory()->auxiliar()->create(), [1, 0]],
+    ];
+
+    $results = ConcurrentDispenser::run(array_map(
+        fn (array $r) => receiveJob($r[0], $transfer, $lots, $r[1]),
+        $receipts,
+    ));
+
+    expect(transferOutcomes($results))->toBe(['OK' => 1, 'TRANSICION_INVALIDA' => 3]);
+
+    $winner = (int) array_search('OK', array_column($results, 'outcome'), true);
+    [$receiver, $quantities] = $receipts[$winner];
+
+    expect($results[$winner]['status'])->toBe($transfer->fresh()?->status->value);
+    expectSingleReceipt($s, $transfer, $lots, $quantities, $receiver->id);
+
+    // Conservación: 12 iniciales = origen + destino + faltante declarado.
+    expect($s->totalAt($s->origin) + $s->totalAt($s->destination) + (int) TransferDiscrepancy::query()->sum('quantity_missing'))->toBe(12);
+});
+
+/**
+ * Traslado de 5 u. despachado y recibido parcialmente (3 de 5) por el
+ * auxiliar: deja UNA discrepancia PENDIENTE de 2 u. Los regentes no
+ * recibieron, así que pueden resolverla (S-60).
+ */
+function partiallyReceivedTransfer(TransferScenario $s): TransferDiscrepancy
+{
+    $transfer = $s->dispatched(5);
+    app(TransferService::class)->receive($transfer, $s->auxiliar, [TransferItemLot::query()->sole()->id => 3]);
+
+    return TransferDiscrepancy::query()->sole();
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function resolveJob(User $regente, TransferDiscrepancy $discrepancy, DiscrepancyResolution $action, bool $unsafe = false): array
+{
+    return [
+        'mode' => 'discrepancy-resolve',
+        'user_id' => $regente->id,
+        'discrepancy_id' => $discrepancy->id,
+        'action' => $action->value,
+        'resolution' => "Resolución {$action->value} de prueba",
+        'unsafe' => $unsafe,
+    ];
+}
+
+it('S-50: 4 regentes resuelven a la vez la misma discrepancia con REINTEGRAR_ORIGEN — un solo AJUSTE (+)', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $discrepancy = partiallyReceivedTransfer($s);
+    $regentes = [$s->regente, $s->regente2, User::factory()->regente()->create(), User::factory()->regente()->create()];
+
+    $results = ConcurrentDispenser::run(array_map(
+        fn (User $u) => resolveJob($u, $discrepancy, DiscrepancyResolution::ReintegrarOrigen),
+        $regentes,
+    ));
+
+    $winner = (int) array_search('OK', array_column($results, 'outcome'), true);
+    $fresh = $discrepancy->fresh();
+    $adjustment = KardexMovement::query()->where('type', KardexType::Ajuste)->sole();
+
+    expect(transferOutcomes($results))->toBe(['OK' => 1, 'TRANSICION_INVALIDA' => 3])
+        ->and($fresh?->status)->toBe(DiscrepancyStatus::Resuelta)
+        ->and($fresh?->resolved_by)->toBe($regentes[$winner]->id)
+        ->and($adjustment->direction)->toBe(1)
+        ->and($adjustment->quantity)->toBe(2)
+        ->and($adjustment->user_id)->toBe($regentes[$winner]->id)
+        ->and($adjustment->warehouse_id)->toBe($s->origin->id)
+        // 10 - 5 despachadas + 2 reintegradas; destino 3.
+        ->and($s->totalAt($s->origin))->toBe(7)
+        ->and($s->totalAt($s->destination))->toBe(3)
+        ->and(AuditLog::query()->where('action', 'transfer_discrepancy.resolved')->count())->toBe(1)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});
+
+it('S-50: REINTEGRAR_ORIGEN y PERDIDA a la vez sobre la misma discrepancia — gana una y el stock coincide con ella', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $discrepancy = partiallyReceivedTransfer($s);
+
+    $results = ConcurrentDispenser::run([
+        resolveJob($s->regente, $discrepancy, DiscrepancyResolution::ReintegrarOrigen),
+        resolveJob($s->regente2, $discrepancy, DiscrepancyResolution::Perdida),
+    ]);
+
+    $fresh = $discrepancy->fresh();
+    expect(transferOutcomes($results))->toBe(['OK' => 1, 'TRANSICION_INVALIDA' => 1])
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+
+    if ($fresh?->resolution_action === DiscrepancyResolution::ReintegrarOrigen) {
+        expect($fresh->resolved_by)->toBe($s->regente->id)
+            ->and(KardexMovement::query()->where('type', KardexType::Ajuste)->count())->toBe(1)
+            ->and($s->totalAt($s->origin))->toBe(7);
+    } else {
+        // PERDIDA: nada vuelve al origen (ni un AJUSTE "huérfano" del perdedor).
+        expect($fresh?->resolution_action)->toBe(DiscrepancyResolution::Perdida)
+            ->and($fresh?->resolved_by)->toBe($s->regente2->id)
+            ->and(KardexMovement::query()->where('type', KardexType::Ajuste)->count())->toBe(0)
+            ->and($s->totalAt($s->origin))->toBe(5);
+    }
+});
+
+it('control: SIN FOR UPDATE el doble REINTEGRAR_ORIGEN lo frena la BD (discrepancia RESUELTA congelada)', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $discrepancy = partiallyReceivedTransfer($s);
+    $regentes = [$s->regente, $s->regente2, User::factory()->regente()->create(), User::factory()->regente()->create()];
+
+    $results = ConcurrentDispenser::run(array_map(
+        fn (User $u) => resolveJob($u, $discrepancy, DiscrepancyResolution::ReintegrarOrigen, unsafe: true),
+        $regentes,
+    ));
+    $counts = transferOutcomes($results);
+
+    expect($counts['OK'] ?? 0)->toBe(1)
+        ->and($counts['CHECK_VIOLATION'] ?? 0)->toBeGreaterThanOrEqual(1)
+        ->and(array_keys($counts))->each->toBeIn(['OK', 'CHECK_VIOLATION', 'TRANSICION_INVALIDA'])
+        ->and(KardexMovement::query()->where('type', KardexType::Ajuste)->count())->toBe(1)
+        ->and($s->totalAt($s->origin))->toBe(7)
+        ->and($discrepancy->fresh()?->status)->toBe(DiscrepancyStatus::Resuelta)
         ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
 });
