@@ -277,3 +277,25 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Los triggers que se lanzan desde la BD responden 500 genérico si alguna vez se disparan (no tienen mapeo en `ApiErrorRenderer`); en la práctica el servicio valida antes con su error específico.
   - `TransferDiscrepancyPolicy::resolve` sigue mirando solo el rol; la regla "no el receptor" vive en el servicio y en BD (no hay `allowed_actions` para discrepancias).
   - Los ajustes siguen sin idempotencia (S-61).
+
+### 2026-10-11 — Refuerzo de pruebas de la Fase 3 (traslados, discrepancias, alertas, kardex)
+- Agente: qa-tester
+- Qué generó la IA:
+  - Concurrencia real (procesos PHP separados + barrera `pg_advisory_lock`, sin `RefreshDatabase`) en `tests/Concurrency/TransferConcurrencyTest.php`: 4 procesos reciben a la vez el mismo traslado con cantidades distintas; 4 regentes resuelven a la vez la misma discrepancia con `REINTEGRAR_ORIGEN`; `REINTEGRAR_ORIGEN` vs `PERDIDA` a la vez; y tres pruebas "control" con los workers sin `FOR UPDATE` (doble recepción, doble reintegro, doble despacho). El worker (`tests/Concurrency/bin/dispense-worker.php`) ganó los modos `transfer-receive` y `discrepancy-resolve`, la pausa del modo `unsafe` tras leer tablas de traslados y el resultado `UNIQUE_VIOLATION` (23505).
+  - Una corrección de BD: migración `2026_10_11_100400_reject_same_status_transfer_update.php` (ver abajo) + prueba de esquema en `TransferTransitionGuardsTest` y ajuste de la prueba de 49 pares; S-64 actualizado.
+  - `tests/Feature/Transfers/TransferConservationTest.php`: flujo por HTTP con recepción parcial y las dos resoluciones; tras cada paso, stock inicial = origen + destino + en tránsito (`GET /stocks/in-transit`) + faltante pendiente + pérdida declarada, y el kardex cuadra; inmutabilidad de `SALIDA_TRASLADO`, `ENTRADA_TRASLADO` y `AJUSTE` de reintegro.
+  - `TransferApiTest`: 12 acciones fuera de su estado por HTTP → 409 `TRANSICION_INVALIDA` con el formato uniforme y sin cambios; 8 filas más de `allowed_actions`.
+  - `AlertsTest`: borde con umbral configurado (30 sí, 31 no), fechas relativas con `travel()` (91 → 90 → vence hoy → vencido y deja de cubrir el mínimo; mínimo 0 nunca alerta), "hoy" de Bogotá frente a UTC.
+  - `TransferServiceTest` (S-59 controlado sin autorización extra, S-52 actores distintos) y `AdjustmentAndKardexApiTest` (S-61: dos ajustes iguales = dos movimientos).
+- Qué decisión tomó y por qué:
+  - **Bug encontrado (defensa en profundidad):** la prueba "control" de doble recepción sin `FOR UPDATE` terminó con 4 recepciones exitosas y el destino con el cuádruple. Causa: `transfers_check_transition` aceptaba `RECIBIDO -> RECIBIDO` como "sin cambio"; `quantity_received` se reescribía con el mismo valor (permitido) y con recepción total no hay discrepancias que choquen con su UNIQUE. En producción no ocurre (el `FOR UPDATE` serializa y la prueba normal da 1 OK + 3 409), pero la segunda defensa no existía para este caso. Arreglo: el trigger ahora acepta exactamente la tabla de `TransferStateMachine`, incluida la diagonal (quedarse en el mismo estado es inválido). Como el trigger es `BEFORE UPDATE OF status` y Eloquent solo envía columnas que cambiaron, actualizar notas sigue funcionando (hay prueba). Esto **invierte** lo que decía la entrada anterior ("el trigger permite mismo estado → mismo estado").
+  - La doble salida por despacho sin bloqueo ya la frenaba el UNIQUE `(transfer_item_id, lot_id)`; el doble reintegro, el trigger que congela la discrepancia resuelta. Se dejaron como pruebas de control.
+  - Las pruebas de concurrencia con payloads distintos por proceso verifican que lo guardado es exactamente lo del ganador (sin mezclas), no solo los conteos.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué una prueba "control" debe poder fallar: si la carrera no ocurre (todos ven el estado ya cambiado), solo habría 409 y la prueba no demostraría nada; por eso exige al menos un `CHECK_VIOLATION`/`UNIQUE_VIOLATION`.
+  - El cambio de comportamiento del trigger (diagonal rechazada) y que la migración nueva no edita la anterior.
+  - En la corrida de concurrencia el número de aserciones varía (165–167) porque dos pruebas tienen ramas según quién gane (despachar vs anular, reintegrar vs pérdida); el número de pruebas es fijo.
+- Riesgos o cosas que podrían estar mal:
+  - Un `UPDATE` manual que incluya `status` con el mismo valor (p. ej. un script que reescribe la fila completa) ahora falla; hay que omitir `status` del `SET`.
+  - `quantity_received` sigue aceptando reescribir el mismo valor (prueba M2 existente); la protección contra la doble recepción total recae en el trigger de transición, que corre al final de la transacción de recepción (deshace todo).
+  - Las pruebas "control" dependen de pausas (300 ms) para forzar la carrera; en una máquina muy lenta podrían dar solo 409 y fallar por "no se reprodujo la carrera" (no por un bug). En 5 corridas seguidas no pasó.
