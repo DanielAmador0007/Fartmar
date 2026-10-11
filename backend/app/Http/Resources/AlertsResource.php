@@ -24,7 +24,7 @@ class AlertsResource extends JsonResource
             'expiry_days' => $this->resource['expiry_days'],
             'expiring_lots' => array_map(fn (ExpiringLotAlert $alert) => [
                 'stock_id' => $alert->stock->id,
-                'warehouse' => TransferResource::warehouse($alert->stock->warehouse),
+                'warehouse' => new WarehouseSummaryResource($alert->stock->warehouse),
                 'product' => [
                     'id' => $alert->stock->product->id,
                     'code' => $alert->stock->product->code,
@@ -40,7 +40,7 @@ class AlertsResource extends JsonResource
                 'is_expired' => $alert->isExpired(),
             ], $this->resource['expiring']),
             'low_stock' => array_map(fn (LowStockAlert $alert) => [
-                'warehouse' => TransferResource::warehouse($alert->warehouse),
+                'warehouse' => new WarehouseSummaryResource($alert->warehouse),
                 'product' => [
                     'id' => $alert->product->id,
                     'code' => $alert->product->code,

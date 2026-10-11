@@ -30,7 +30,7 @@ class KardexMovementResource extends JsonResource
             'quantity' => $this->quantity,
             'signed_quantity' => $this->quantity * $this->direction,
             'balance_after' => $this->balance_after,
-            'warehouse' => TransferResource::warehouse($this->warehouse),
+            'warehouse' => new WarehouseSummaryResource($this->warehouse),
             'product' => [
                 'id' => $this->product->id,
                 'code' => $this->product->code,

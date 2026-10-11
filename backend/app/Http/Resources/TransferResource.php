@@ -8,7 +8,6 @@ use App\Models\Transfer;
 use App\Models\TransferItem;
 use App\Models\TransferItemLot;
 use App\Models\User;
-use App\Models\Warehouse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -47,8 +46,8 @@ class TransferResource extends JsonResource
         return [
             'id' => $this->id,
             'status' => $this->status->value,
-            'origin_warehouse' => $this->whenLoaded('originWarehouse', fn () => self::warehouse($this->originWarehouse)),
-            'destination_warehouse' => $this->whenLoaded('destinationWarehouse', fn () => self::warehouse($this->destinationWarehouse)),
+            'origin_warehouse' => new WarehouseSummaryResource($this->whenLoaded('originWarehouse')),
+            'destination_warehouse' => new WarehouseSummaryResource($this->whenLoaded('destinationWarehouse')),
             'notes' => $this->notes,
             'items_count' => $this->whenCounted('items'),
             'items' => $this->whenLoaded('items', fn () => $this->items->map(fn (TransferItem $item) => [
@@ -118,13 +117,5 @@ class TransferResource extends JsonResource
         $user = $request->user();
 
         return $user instanceof User ? app(TransferActions::class)->allowedFor($user, $this->resource) : [];
-    }
-
-    /**
-     * @return array{id: int, code: string, name: string}
-     */
-    public static function warehouse(Warehouse $warehouse): array
-    {
-        return ['id' => $warehouse->id, 'code' => $warehouse->code, 'name' => $warehouse->name];
     }
 }
