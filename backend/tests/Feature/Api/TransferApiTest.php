@@ -359,6 +359,7 @@ function transferInState(TransferScenario $s, string $state): Transfer
         'APROBADO' => $s->approved(),
         'EN_TRANSITO' => $s->dispatched(),
         'RECIBIDO' => $service->receive($s->dispatched(), $s->auxiliar, TransferItemLot::query()->pluck('quantity_dispatched', 'id')->map(fn ($q) => (int) $q)->all()),
+        'RECIBIDO_PARCIAL' => $service->receive($s->dispatched(), $s->auxiliar, TransferItemLot::query()->pluck('id')->mapWithKeys(fn ($id) => [(int) $id => 0])->all()),
         'ANULADO' => $service->cancel($s->requested(), $s->auxiliar, 'Ya no se necesita'),
         default => throw new InvalidArgumentException($state),
     };
@@ -390,6 +391,59 @@ it('M6: allowed_actions combina Policy y estado para el usuario actual', functio
     'EN_TRANSITO / auditor' => ['EN_TRANSITO', 'auditor', []],
     'RECIBIDO / regente' => ['RECIBIDO', 'regente', []],
     'ANULADO / creador' => ['ANULADO', 'creador', []],
+    // Refuerzo de pruebas de la Fase 3 (S-52, S-53, RN-07).
+    'BORRADOR / auditor' => ['BORRADOR', 'auditor', []],
+    'SOLICITADO / otro auxiliar' => ['SOLICITADO', 'otro_auxiliar', []],
+    'APROBADO / creador' => ['APROBADO', 'creador', ['dispatch', 'cancel']],
+    'EN_TRANSITO / creador (ya no anula)' => ['EN_TRANSITO', 'creador', ['receive']],
+    'EN_TRANSITO / regente (ya no anula)' => ['EN_TRANSITO', 'regente', ['receive']],
+    'RECIBIDO_PARCIAL / regente' => ['RECIBIDO_PARCIAL', 'regente', []],
+    'RECIBIDO_PARCIAL / creador' => ['RECIBIDO_PARCIAL', 'creador', []],
+    'ANULADO / regente' => ['ANULADO', 'regente', []],
+]);
+
+it('RN-07 por HTTP: cada acción fuera de su estado responde 409 TRANSICION_INVALIDA con el formato uniforme y no cambia nada', function (string $state, string $action, string $to) {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = transferInState($s, $state);
+    $lots = TransferItemLot::query()->get();
+    $body = match ($action) {
+        'cancel' => ['reason' => 'Ya no se necesita'],
+        // Si hay lotes despachados se mandan completos (lo que haría una
+        // segunda recepción real); si no, uno cualquiera.
+        'receive' => ['lots' => $lots->isEmpty()
+            ? [['transfer_item_lot_id' => 999999, 'quantity_received' => 1]]
+            : $lots->map(fn ($l) => ['transfer_item_lot_id' => $l->id, 'quantity_received' => $l->quantity_dispatched])->all()],
+        default => [],
+    };
+    $kardexBefore = KardexMovement::query()->count();
+
+    // regente2 no solicitó ni aprobó: la Policy le permite todas las acciones,
+    // así que lo que responde es la máquina de estados del servicio.
+    Sanctum::actingAs($action === 'submit' ? $s->auxiliar : $s->regente2);
+    $response = test()->postJson("/api/v1/transfers/{$transfer->id}/{$action}", $body)
+        ->assertStatus(409)
+        ->assertJsonStructure(['error' => ['code', 'message', 'details' => ['from', 'to']]])
+        ->assertJsonPath('error.code', 'TRANSICION_INVALIDA')
+        ->assertJsonPath('error.details.from', $state)
+        ->assertJsonPath('error.details.to', $to);
+
+    expect(array_keys($response->json()))->toBe(['error'])
+        ->and($response->json('error.message'))->toBeString()->not->toBeEmpty()
+        ->and($transfer->fresh()?->status->value)->toBe($state)
+        ->and(KardexMovement::query()->count())->toBe($kardexBefore);
+})->with([
+    'aprobar un BORRADOR' => ['BORRADOR', 'approve', 'APROBADO'],
+    'despachar un BORRADOR' => ['BORRADOR', 'dispatch', 'EN_TRANSITO'],
+    'solicitar dos veces' => ['SOLICITADO', 'submit', 'SOLICITADO'],
+    'despachar un SOLICITADO' => ['SOLICITADO', 'dispatch', 'EN_TRANSITO'],
+    'aprobar dos veces' => ['APROBADO', 'approve', 'APROBADO'],
+    'recibir un APROBADO' => ['APROBADO', 'receive', 'RECIBIDO'],
+    'recibir dos veces' => ['RECIBIDO', 'receive', 'RECIBIDO'],
+    'recibir un RECIBIDO_PARCIAL' => ['RECIBIDO_PARCIAL', 'receive', 'RECIBIDO'],
+    'anular un RECIBIDO' => ['RECIBIDO', 'cancel', 'ANULADO'],
+    'anular un RECIBIDO_PARCIAL' => ['RECIBIDO_PARCIAL', 'cancel', 'ANULADO'],
+    'despachar un ANULADO' => ['ANULADO', 'dispatch', 'EN_TRANSITO'],
+    'anular dos veces' => ['ANULADO', 'cancel', 'ANULADO'],
 ]);
 
 it('M6: el regente que solicitó no ve "approve" en allowed_actions; otro regente sí', function () {
