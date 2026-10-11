@@ -399,3 +399,54 @@ it('control: SIN FOR UPDATE el doble REINTEGRAR_ORIGEN lo frena la BD (discrepan
         ->and($discrepancy->fresh()?->status)->toBe(DiscrepancyStatus::Resuelta)
         ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
 });
+it('control: SIN FOR UPDATE la doble recepción la frena la BD (la prueba sí detecta el problema)', function () {
+    // Workers "unsafe": sin bloqueos y con pausa tras cada lectura de
+    // traslados/stocks, todos leen EN_TRANSITO y pasan la máquina de estados
+    // en PHP. Solo la BD (quantity_received se escribe una vez,
+    // transfers_check_transition, saldo del kardex) evita la doble entrada.
+    // Que aparezca CHECK_VIOLATION (y no solo TRANSICION_INVALIDA) prueba que
+    // la carrera sí ocurrió; con el FOR UPDATE de producción la prueba
+    // anterior obtiene 409 limpios.
+    $s = TransferScenario::make([[10, 2], [90, 10]]);
+    $transfer = $s->dispatched(5);
+    $lots = dispatchedLotsOf($transfer);
+    $users = [$s->auxiliar, $s->regente, $s->regente2, User::factory()->auxiliar()->create()];
+
+    $results = ConcurrentDispenser::run(array_map(
+        fn (User $u) => receiveJob($u, $transfer, $lots, [2, 3], unsafe: true),
+        $users,
+    ));
+    $counts = transferOutcomes($results);
+
+    expect($counts['OK'] ?? 0)->toBe(1)
+        ->and($counts['CHECK_VIOLATION'] ?? 0)->toBeGreaterThanOrEqual(1)
+        ->and(array_keys($counts))->each->toBeIn(['OK', 'CHECK_VIOLATION', 'TRANSICION_INVALIDA']);
+
+    $winner = (int) array_search('OK', array_column($results, 'outcome'), true);
+    expectSingleReceipt($s, $transfer, $lots, [2, 3], $users[$winner]->id);
+});
+
+it('control: SIN FOR UPDATE el doble despacho lo frena la BD (no hay dos SALIDA_TRASLADO del mismo traslado)', function () {
+    // Sin bloqueo, todos leen APROBADO y descuentan stock (hay de sobra: el
+    // CHECK quantity >= 0 no ayuda). Lo frena la BD: el UNIQUE
+    // (transfer_item_id, lot_id) de transfer_item_lots (FEFO elige el mismo
+    // lote) y, si no, transfers_check_transition (EN_TRANSITO -> EN_TRANSITO).
+    $s = TransferScenario::make([[30, 40]]);
+    $transfer = approvedTransferFor($s, [$s->product->id => 5]);
+    $users = [$s->auxiliar, $s->regente, $s->regente2, User::factory()->auxiliar()->create()];
+
+    $results = ConcurrentDispenser::run(array_map(
+        fn (User $u) => ['mode' => 'transfer-dispatch', 'user_id' => $u->id, 'transfer_id' => $transfer->id, 'unsafe' => true],
+        $users,
+    ));
+    $counts = transferOutcomes($results);
+
+    expect($counts['OK'] ?? 0)->toBe(1)
+        ->and(($counts['CHECK_VIOLATION'] ?? 0) + ($counts['UNIQUE_VIOLATION'] ?? 0))->toBeGreaterThanOrEqual(1)
+        ->and(array_keys($counts))->each->toBeIn(['OK', 'CHECK_VIOLATION', 'UNIQUE_VIOLATION', 'TRANSICION_INVALIDA'])
+        ->and($transfer->fresh()?->status)->toBe(TransferStatus::EnTransito)
+        ->and(KardexMovement::query()->where('type', KardexType::SalidaTraslado)->count())->toBe(1)
+        ->and((int) TransferItemLot::query()->sum('quantity_dispatched'))->toBe(5)
+        ->and($s->totalAt($s->origin))->toBe(35)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});

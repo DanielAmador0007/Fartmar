@@ -32,7 +32,7 @@
 |      (approve, dispatch, cancel, receive, resolveDiscrepancy)
 |      (código real de producción).
 |   4. Imprime UNA línea JSON con el resultado y termina con código 0.
-|      Solo un error inesperado (no de negocio ni CHECK) termina con código 1.
+|      Solo un error inesperado (no de negocio, CHECK ni UNIQUE) termina con código 1.
 |
 | unsafe = true SOLO existe para demostrar que la prueba detecta el problema:
 | quita todos los FOR UPDATE de este proceso (gramática SQL sin bloqueo) y
@@ -161,6 +161,12 @@ try {
     // SQLSTATE 23514 = check_violation: el CHECK de la BD frenó la operación.
     if ($e->getCode() === '23514') {
         respond(['outcome' => 'CHECK_VIOLATION', 'message' => $e->getMessage()]);
+    }
+
+    // SQLSTATE 23505 = unique_violation: un UNIQUE de la BD frenó la operación
+    // (solo se espera en los workers "unsafe", sin bloqueos).
+    if ($e->getCode() === '23505') {
+        respond(['outcome' => 'UNIQUE_VIOLATION', 'message' => $e->getMessage()]);
     }
 
     respond(['outcome' => 'UNEXPECTED', 'sqlstate' => $e->getCode(), 'message' => $e->getMessage()], 1);

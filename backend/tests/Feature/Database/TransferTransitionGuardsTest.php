@@ -79,8 +79,9 @@ it('A1: la BD acepta exactamente las mismas transiciones que TransferStateMachin
                 expect($e->getMessage())->toContain('transfers_check_transition');
             }
 
-            $expected = $from === $to || $machine->canTransition($from, $to);
-            expect($accepted)->toBe($expected, "{$from->value} -> {$to->value}");
+            // Igual que la máquina de estados: escribir el MISMO estado
+            // (diagonal) también se rechaza (migración 2026_10_11_100400).
+            expect($accepted)->toBe($machine->canTransition($from, $to), "{$from->value} -> {$to->value}");
             $checked++;
         }
     }
@@ -108,6 +109,25 @@ it('A1: un traslado RECIBIDO no se reabre ni se devuelve a EN_TRANSITO', functio
 
     expectDbRejects(fn () => DB::table('transfers')->where('id', $id)->update(['status' => 'EN_TRANSITO']), 'transfers_check_transition');
     expectDbRejects(fn () => DB::table('transfers')->where('id', $id)->update(['status' => 'BORRADOR']), 'transfers_check_transition');
+});
+
+it('A1: una segunda recepción (RECIBIDO -> RECIBIDO con otro receptor) se rechaza; cambiar solo las notas sí se permite', function () {
+    // Es lo que escribiría una recepción duplicada que se saltara el FOR
+    // UPDATE de TransferService (ver TransferConcurrencyTest, prueba "control").
+    $regente = User::factory()->regente()->create();
+    $auxiliar = User::factory()->auxiliar()->create();
+    $id = guardTransferIn('RECIBIDO', $auxiliar, $regente, $auxiliar);
+    $other = User::factory()->auxiliar()->create();
+
+    expectDbRejects(
+        fn () => DB::table('transfers')->where('id', $id)->update(['status' => 'RECIBIDO', 'received_by' => $other->id, 'received_at' => now()]),
+        'transición de traslado no permitida de RECIBIDO a RECIBIDO',
+    );
+    expect(DB::table('transfers')->where('id', $id)->value('received_by'))->toBe($auxiliar->id);
+
+    // Sin la columna status en el UPDATE el trigger no se dispara.
+    DB::table('transfers')->where('id', $id)->update(['notes' => 'Nota posterior', 'updated_at' => now()]);
+    expect(DB::table('transfers')->where('id', $id)->value('notes'))->toBe('Nota posterior');
 });
 
 /**

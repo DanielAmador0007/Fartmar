@@ -18,7 +18,8 @@ use App\Enums\TransferStatus;
  *
  * TransferService llama assertCanTransition() con la fila del traslado ya
  * bloqueada (FOR UPDATE) antes de cambiar nada. La BD repite el MISMO mapa
- * en el trigger transfers_check_transition (migración 2026_10_11_100000):
+ * en el trigger transfers_check_transition (migraciones 2026_10_11_100000 y
+ * 2026_10_11_100400, que también rechaza quedarse en el mismo estado):
  * si se cambia aquí, hay que cambiarlo allá (lo verifica
  * TransferTransitionGuardsTest comparando los 49 pares).
  */
