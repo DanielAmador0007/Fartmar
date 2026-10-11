@@ -1,5 +1,7 @@
 <?php
 
+use App\Logging\UseRedaction;
+use Monolog\Formatter\JsonFormatter;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -18,7 +20,10 @@ return [
     |
     */
 
-    'default' => env('LOG_CHANNEL', 'stack'),
+    // "json" (predeterminado): una línea JSON por registro a stderr del
+    // contenedor, con correlation_id e ip (Laravel Context). Todos los
+    // canales que escriben pasan por App\Logging\RedactSensitiveData (tap).
+    'default' => env('LOG_CHANNEL', 'json'),
 
     /*
     |--------------------------------------------------------------------------
@@ -60,6 +65,7 @@ return [
 
         'single' => [
             'driver' => 'single',
+            'tap' => [UseRedaction::class],
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
@@ -67,6 +73,7 @@ return [
 
         'daily' => [
             'driver' => 'daily',
+            'tap' => [UseRedaction::class],
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'max_files' => env('LOG_DAILY_DAYS', 14),
@@ -75,6 +82,7 @@ return [
 
         'monthly' => [
             'driver' => 'monthly',
+            'tap' => [UseRedaction::class],
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'max_files' => 3,
@@ -102,8 +110,23 @@ return [
             'processors' => [PsrLogMessageProcessor::class],
         ],
 
+        // Logs estructurados para contenedores (docker logs / agregadores).
+        // php://stderr: el servidor embebido de PHP y php-fpm lo envían al
+        // log del contenedor (LOG_STREAM=php://stdout si se prefiere).
+        'json' => [
+            'driver' => 'monolog',
+            'level' => env('LOG_LEVEL', 'debug'),
+            'handler' => StreamHandler::class,
+            'handler_with' => [
+                'stream' => env('LOG_STREAM', 'php://stderr'),
+            ],
+            'formatter' => JsonFormatter::class,
+            'tap' => [UseRedaction::class],
+        ],
+
         'stderr' => [
             'driver' => 'monolog',
+            'tap' => [UseRedaction::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'handler' => StreamHandler::class,
             'handler_with' => [

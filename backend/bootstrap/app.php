@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\ApiErrorRenderer;
+use App\Http\Middleware\AssignCorrelationId;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -19,7 +20,9 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Primero en el grupo api: así el correlation id existe antes de
+        // autenticar y vuelve en la respuesta aunque sea un 401/403/429.
+        $middleware->api(prepend: [AssignCorrelationId::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
