@@ -34,17 +34,17 @@ it('genera un X-Correlation-Id (UUID) si el cliente no lo envía, también en un
     expect(Str::isUuid((string) $response->headers->get('X-Correlation-Id')))->toBeTrue();
 });
 
-it('respeta un X-Correlation-Id válido y reemplaza uno inválido', function (string $incoming, bool $kept) {
+it('B1: el correlation id siempre lo genera el servidor; el del cliente válido vuelve aparte como X-Client-Correlation-Id', function (string $incoming, bool $kept) {
     Sanctum::actingAs(User::factory()->auxiliar()->create());
 
-    $returned = (string) $this->getJson('/api/v1/auth/me', ['X-Correlation-Id' => $incoming])
-        ->assertOk()
-        ->headers->get('X-Correlation-Id');
+    $response = $this->getJson('/api/v1/auth/me', ['X-Correlation-Id' => $incoming])->assertOk();
+    $serverId = (string) $response->headers->get('X-Correlation-Id');
 
+    expect(Str::isUuid($serverId))->toBeTrue()->and($serverId)->not->toBe($incoming);
     if ($kept) {
-        expect($returned)->toBe($incoming);
+        $response->assertHeader('X-Client-Correlation-Id', $incoming);
     } else {
-        expect($returned)->not->toBe($incoming)->and(Str::isUuid($returned))->toBeTrue();
+        $response->assertHeaderMissing('X-Client-Correlation-Id');
     }
 })->with([
     'uuid' => ['3f1c2a9e-6b1d-4e7a-9c55-0a8b7d6e5f43', true],
@@ -58,12 +58,13 @@ it('respeta un X-Correlation-Id válido y reemplaza uno inválido', function (st
 it('la dispensación guarda el correlation_id en dispensations y kardex, y correlation_id + ip en audit_logs', function () {
     $s = DispensingScenario::make([[30, 10]], prescribed: 5);
     Sanctum::actingAs($s->auxiliar);
-    $correlationId = (string) Str::uuid();
 
-    $this->postJson('/api/v1/dispensations', $s->payload(2), [
+    $correlationId = (string) $this->postJson('/api/v1/dispensations', $s->payload(2), [
         'Idempotency-Key' => (string) Str::uuid(),
-        'X-Correlation-Id' => $correlationId,
-    ])->assertCreated()->assertHeader('X-Correlation-Id', $correlationId);
+        'X-Correlation-Id' => 'cliente-intenta-fijar-id',
+    ])->assertCreated()->headers->get('X-Correlation-Id');
+
+    expect(Str::isUuid($correlationId))->toBeTrue();
 
     expect(Dispensation::query()->sole()->correlation_id)->toBe($correlationId)
         ->and(KardexMovement::query()->pluck('correlation_id')->unique()->all())->toBe([$correlationId]);
@@ -90,12 +91,14 @@ it('todo canal de log que escribe tiene el tap de redacción (M1)', function () 
         ->and(config('logging.channels.null.handler'))->toBe(NullHandler::class);
 });
 
-it('un 500 por QueryException no deja en el log el correo, el hash de la clave ni la línea DETAIL', function () {
+it('un 500 por QueryException no deja en el log datos del paciente, valores del INSERT ni la línea DETAIL', function () {
     config(['app.debug' => false]);
-    $email = 'duplicado.secreto@fartmar.test';
-    User::factory()->create(['email' => $email]);
-    Route::middleware('api')->post('/api/v1/_prueba/duplicado', fn () => User::query()->create([
-        'name' => 'Nombre Secreto', 'email' => $email, 'password' => 'ClaveSecreta123',
+    // users_email_unique ya se mapea a 422 (B4); un paciente duplicado sigue
+    // siendo un 500 inesperado y su INSERT trae nombres, teléfono y documento.
+    $existing = Patient::factory()->create(['document_type' => 'CC', 'document_number' => '1077000111']);
+    Route::middleware('api')->post('/api/v1/_prueba/duplicado', fn () => Patient::query()->create([
+        'document_type' => 'CC', 'document_number' => '1077000111',
+        'first_name' => 'Nombre Secreto', 'last_name' => 'Apellido Secreto', 'birth_date' => '1990-01-01', 'phone' => '3009998877',
     ]));
     $logs = LogCapture::start();
 
@@ -107,14 +110,15 @@ it('un 500 por QueryException no deja en el log el correo, el hash de la clave n
     // Se registró el error, en JSON, con lo útil para depurar...
     expect($logs->records())->not->toBeEmpty()
         ->and(json_decode(strtok($output, "\n") ?: '', true))->toBeArray()
-        ->and($output)->toContain('users_email_unique')
+        ->and($output)->toContain('patients_document_hash_unique')
         ->and($output)->toContain('insert into')
-        ->and($output)->toContain('prueba-500');
+        ->and($output)->toContain((string) $response->headers->get('X-Correlation-Id'))
+        ->and($output)->toContain('prueba-500'); // client_correlation_id
     // ...y sin datos personales ni secretos.
-    foreach ([$email, 'Nombre Secreto', 'ClaveSecreta123', '$2y$', 'DETAIL', 'Key (email)', 'Host: ', 'fartmar_test'] as $leak) {
+    foreach (['Nombre Secreto', 'Apellido Secreto', '3009998877', '1077000111', $existing->document_hash, '1990-01-01', 'DETAIL', 'Key (document_hash)', 'Host: ', 'fartmar_test'] as $leak) {
         expect($output)->not->toContain($leak);
     }
-    expect((string) $response->getContent())->not->toContain($email);
+    expect((string) $response->getContent())->not->toContain('Nombre Secreto');
 });
 
 it('redacta una QueryException con los valores en el mensaje aunque no se hayan enmascarado los bindings', function () {

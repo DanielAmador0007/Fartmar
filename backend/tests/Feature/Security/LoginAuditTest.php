@@ -20,15 +20,16 @@ it('un login fallido queda en audit_logs con HMAC del correo, motivo, ip y corre
         'inactivo' => ['objetivo@fartmar.test', 'password', 'USUARIO_INACTIVO'],
     };
 
-    $this->postJson('/api/v1/auth/login', ['email' => $email, 'password' => $password], ['X-Correlation-Id' => 'login-malo-1'])
-        ->assertUnauthorized();
+    $correlationId = $this->postJson('/api/v1/auth/login', ['email' => $email, 'password' => $password])
+        ->assertUnauthorized()
+        ->headers->get('X-Correlation-Id');
 
     $audit = AuditLog::query()->where('action', 'auth.login_failed')->sole();
     expect($audit->user_id)->toBeNull()
         ->and($audit->metadata)->toEqual(['email_hash' => LoginService::emailHash($email), 'reason' => $reason])
         ->and($audit->metadata['email_hash'])->toHaveLength(64)
         ->and($audit->ip)->toBe('127.0.0.1')
-        ->and($audit->correlation_id)->toBe('login-malo-1')
+        ->and($audit->correlation_id)->toBe($correlationId)
         ->and($audit->auditable_id)->toBe($case === 'usuario inexistente' ? null : $user->id);
 
     $row = json_encode(AuditLog::query()->toBase()->where('id', $audit->id)->first(), JSON_THROW_ON_ERROR);

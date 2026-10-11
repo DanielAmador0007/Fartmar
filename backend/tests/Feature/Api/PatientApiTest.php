@@ -45,9 +45,7 @@ it('busca por documento exacto (HMAC) aunque venga con puntos o guiones, y regis
     Patient::factory()->create(['document_type' => 'TI', 'document_number' => '1032456789']); // mismo número, otro tipo
     $user = actingAsRole(Role::AuxiliarFarmacia);
 
-    $this->postJson('/api/v1/patients/search', ['document_type' => 'CC', 'document_number' => '1.032.456-789'], [
-        'X-Correlation-Id' => 'busqueda-1',
-    ])
+    $response = $this->postJson('/api/v1/patients/search', ['document_type' => 'CC', 'document_number' => '1.032.456-789'])
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $patient->id)
@@ -59,7 +57,7 @@ it('busca por documento exacto (HMAC) aunque venga con puntos o guiones, y regis
         ->and($log->patient_id)->toBe($patient->id)
         ->and($log->action)->toBe('patient.search')
         ->and($log->masked)->toBeFalse()
-        ->and($log->correlation_id)->toBe('busqueda-1')
+        ->and($log->correlation_id)->toBe($response->headers->get('X-Correlation-Id'))
         ->and($log->ip)->toBe('127.0.0.1');
 });
 
@@ -281,14 +279,14 @@ it('ver una dispensación registra patient.dispensation_view (enmascarado para e
     $dispensation = app(DispenseService::class)->create($s->auxiliar, $s->data(1), (string) Str::uuid())->dispensation;
     $user = actingAsRole($role);
 
-    $this->getJson("/api/v1/dispensations/{$dispensation->id}", ['X-Correlation-Id' => 'ver-dispensacion'])->assertOk();
+    $correlationId = $this->getJson("/api/v1/dispensations/{$dispensation->id}")->assertOk()->headers->get('X-Correlation-Id');
 
     $log = PatientAccessLog::query()->sole();
     expect($log->action)->toBe('patient.dispensation_view')
         ->and($log->user_id)->toBe($user->id)
         ->and($log->patient_id)->toBe($s->patient->id)
         ->and($log->masked)->toBe($masked)
-        ->and($log->correlation_id)->not->toBeNull();
+        ->and($log->correlation_id)->toBe($correlationId);
 })->with([
     'auxiliar' => [Role::AuxiliarFarmacia, false],
     'auditor' => [Role::Auditor, true],
