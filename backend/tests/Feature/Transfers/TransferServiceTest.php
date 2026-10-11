@@ -480,3 +480,23 @@ it('M5: la BD rechaza que quien recibió resuelva la discrepancia (trigger)', fu
     ]);
     expect(DB::table('transfer_discrepancies')->where('id', $id)->value('status'))->toBe('RESUELTA');
 });
+
+it('S-59/S-52: un controlado se traslada sin autorización extra; despacha y recibe personal distinto del solicitante', function () {
+    $s = TransferScenario::make([]);
+    $controlled = Product::factory()->controlled()->create();
+    $lot = $s->addLot($controlled, 60, 10);
+    $dispatcher = User::factory()->auxiliar()->create();
+
+    $draft = transfers()->create($s->auxiliar, $s->data(products: [$controlled->id => 4]));
+    $approved = transfers()->approve(transfers()->submit($draft, $s->auxiliar), $s->regente);
+    $dispatched = transfers()->dispatch($approved, $dispatcher);
+    // Recibe el mismo regente que aprobó: S-52 no lo prohíbe.
+    $received = transfers()->receive($dispatched, $s->regente, fullReceipt($dispatched));
+
+    expect($received->status)->toBe(TransferStatus::Recibido)
+        ->and($received->dispatched_by)->toBe($dispatcher->id)
+        ->and($received->received_by)->toBe($s->regente->id)
+        ->and($s->stockAt($s->origin, $lot))->toBe(6)
+        ->and($s->stockAt($s->destination, $lot))->toBe(4)
+        ->and(ConcurrentDispenser::kardexInconsistencies())->toBe([]);
+});

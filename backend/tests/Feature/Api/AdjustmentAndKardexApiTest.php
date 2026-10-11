@@ -192,3 +192,17 @@ it('L5: reference_type debe ser un documento conocido y reference_id exige el ti
     'id sin tipo' => ['reference_id=5', 'reference_type'],
     'id inválido' => ['reference_type=transfer&reference_id=0', 'reference_id'],
 ]);
+
+it('S-61: los ajustes NO son idempotentes — dos envíos iguales crean dos AJUSTE (limitación documentada)', function () {
+    // Si algún día se agrega Idempotency-Key a los ajustes, esta prueba debe
+    // cambiar a "un solo movimiento" (y S-61 actualizarse).
+    $s = TransferScenario::make([[30, 10]]);
+    Sanctum::actingAs($s->regente);
+    $payload = ['warehouse_id' => $s->origin->id, 'lot_id' => $s->lots[0]->id, 'quantity' => -2, 'reason' => 'Unidades averiadas en conteo'];
+
+    test()->postJson('/api/v1/inventory-adjustments', $payload)->assertCreated()->assertJsonPath('data.balance_after', 8);
+    test()->postJson('/api/v1/inventory-adjustments', $payload)->assertCreated()->assertJsonPath('data.balance_after', 6);
+
+    expect(KardexMovement::query()->where('type', KardexType::Ajuste)->count())->toBe(2)
+        ->and($s->stockAt($s->origin, $s->lots[0]))->toBe(6);
+});
