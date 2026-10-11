@@ -314,3 +314,18 @@ it('B6: un paciente inexistente responde 404 y no registra acceso', function () 
 
     expect(PatientAccessLog::query()->count())->toBe(0);
 });
+
+it('B7: la búsqueda de pacientes tiene su propio límite de 30 por minuto por usuario', function () {
+    actingAsRole(Role::AuxiliarFarmacia);
+
+    for ($i = 0; $i < 30; $i++) {
+        $this->postJson('/api/v1/patients/search', ['document_type' => 'CC', 'document_number' => (string) (100000 + $i)])->assertOk();
+    }
+    $this->postJson('/api/v1/patients/search', ['document_type' => 'CC', 'document_number' => '999999'])
+        ->assertStatus(429)
+        ->assertJsonPath('error.code', 'DEMASIADAS_SOLICITUDES');
+
+    // Otro usuario no se ve afectado.
+    actingAsRole(Role::AuxiliarFarmacia);
+    $this->postJson('/api/v1/patients/search', ['document_type' => 'CC', 'document_number' => '999999'])->assertOk();
+});

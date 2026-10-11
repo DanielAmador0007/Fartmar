@@ -79,7 +79,9 @@ Route::prefix('v1')->group(function (): void {
 
         // Pacientes (RN-10): enmascarado por rol y bitácora de cada lectura.
         // Búsqueda por POST para que el documento no quede en URLs ni logs de acceso (S-69).
-        Route::post('patients/search', [PatientController::class, 'search'])->name('patients.search');
+        Route::post('patients/search', [PatientController::class, 'search'])
+            ->middleware('throttle:patient-search')
+            ->name('patients.search');
         Route::get('patients/{patient}', [PatientController::class, 'show'])->name('patients.show');
         Route::get('patients/{patient}/prescriptions', [PatientController::class, 'prescriptions'])
             ->name('patients.prescriptions');

@@ -79,6 +79,11 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('password', fn (Request $request): Limit => Limit::perMinute(5)
             ->by('password:'.($request->user()?->getAuthIdentifier() ?? $request->ip())));
 
+        // Búsqueda de pacientes (S-69): 30 por minuto por usuario; frena barrer
+        // documentos (cada búsqueda ya queda en la bitácora o en audit_logs).
+        RateLimiter::for('patient-search', fn (Request $request): Limit => Limit::perMinute(30)
+            ->by('patient-search:'.($request->user()?->getAuthIdentifier() ?? $request->ip())));
+
         // Login: 5 intentos por minuto por correo + IP (fuerza bruta sobre una
         // cuenta) y 20 por minuto por IP (barrido de muchas cuentas).
         RateLimiter::for('login', function (Request $request): array {
