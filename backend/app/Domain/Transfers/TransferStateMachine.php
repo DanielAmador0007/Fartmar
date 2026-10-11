@@ -16,9 +16,11 @@ use App\Enums\TransferStatus;
  * mismo estado" (p. ej. aprobar dos veces). RECIBIDO, RECIBIDO_PARCIAL y
  * ANULADO son finales.
  *
- * La BD solo valida la fila resultante (actores y fechas de cada estado), no
- * el paso; por eso TransferService llama assertCanTransition() con la fila
- * del traslado ya bloqueada (FOR UPDATE) antes de cambiar nada.
+ * TransferService llama assertCanTransition() con la fila del traslado ya
+ * bloqueada (FOR UPDATE) antes de cambiar nada. La BD repite el MISMO mapa
+ * en el trigger transfers_check_transition (migración 2026_10_11_100000):
+ * si se cambia aquí, hay que cambiarlo allá (lo verifica
+ * TransferTransitionGuardsTest comparando los 49 pares).
  */
 final class TransferStateMachine
 {

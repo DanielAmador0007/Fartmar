@@ -163,6 +163,27 @@ function insertDispatchedTransfer(): int
     ]));
 }
 
+/**
+ * Lleva un traslado en BORRADOR hasta $target por el camino válido
+ * (BORRADOR -> SOLICITADO -> APROBADO -> EN_TRANSITO), con sus actores.
+ * Las líneas deben insertarse ANTES: solo se aceptan en BORRADOR.
+ */
+function advanceTransfer(int $id, string $target = 'EN_TRANSITO'): void
+{
+    $steps = [
+        'SOLICITADO' => fn () => ['requested_at' => now()],
+        'APROBADO' => fn () => ['approved_by' => User::factory()->regente()->create()->id, 'approved_at' => now()],
+        'EN_TRANSITO' => fn () => ['dispatched_by' => User::factory()->auxiliar()->create()->id, 'dispatched_at' => now()],
+    ];
+
+    foreach ($steps as $status => $columns) {
+        DB::table('transfers')->where('id', $id)->update(['status' => $status] + $columns());
+        if ($status === $target) {
+            return;
+        }
+    }
+}
+
 it('RN-07: un traslado EN_TRANSITO no se puede pasar a ANULADO por UPDATE', function () {
     $id = insertDispatchedTransfer();
 
@@ -171,7 +192,7 @@ it('RN-07: un traslado EN_TRANSITO no se puede pasar a ANULADO por UPDATE', func
         'cancelled_by' => User::factory()->regente()->create()->id,
         'cancelled_at' => now(),
         'cancellation_reason' => 'Error de digitación',
-    ]), 'transfers_cancel_before_dispatch');
+    ]), 'transfers_check_transition'); // El trigger de transición frena antes que el CHECK (que sigue cubriendo el INSERT).
 
     expect(DB::table('transfers')->where('id', $id)->value('status'))->toBe('EN_TRANSITO');
 });
@@ -216,7 +237,7 @@ it('RN-07: RECIBIDO_PARCIAL también exige receptor', function () {
 });
 
 it('líneas y lotes de traslado: sin duplicados, lote del producto y cantidades en rango', function () {
-    $transferId = insertDispatchedTransfer();
+    $transferId = DB::table('transfers')->insertGetId(transferRow());
     $product = Product::factory()->create();
     $lot = Lot::factory()->create(['product_id' => $product->id]);
     $itemId = DB::table('transfer_items')->insertGetId([
@@ -226,6 +247,8 @@ it('líneas y lotes de traslado: sin duplicados, lote del producto y cantidades 
     expectDbRejects(fn () => DB::table('transfer_items')->insert([
         'transfer_id' => $transferId, 'product_id' => $product->id, 'quantity_requested' => 1,
     ]), 'transfer_items_transfer_id_product_id_unique');
+
+    advanceTransfer($transferId);
 
     $lotOfOtherProduct = Lot::factory()->create();
     expectDbRejects(fn () => DB::table('transfer_item_lots')->insert([
@@ -252,11 +275,12 @@ it('líneas y lotes de traslado: sin duplicados, lote del producto y cantidades 
 });
 
 it('discrepancias: una por lote despachado, estado válido y resolución completa', function () {
-    $transferId = insertDispatchedTransfer();
+    $transferId = DB::table('transfers')->insertGetId(transferRow());
     $product = Product::factory()->create();
     $itemId = DB::table('transfer_items')->insertGetId([
         'transfer_id' => $transferId, 'product_id' => $product->id, 'quantity_requested' => 4,
     ]);
+    advanceTransfer($transferId);
     $itemLotId = DB::table('transfer_item_lots')->insertGetId([
         'transfer_item_id' => $itemId,
         'lot_id' => Lot::factory()->create(['product_id' => $product->id])->id,
