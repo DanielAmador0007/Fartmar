@@ -1,14 +1,16 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.3.0
+  version: 0.4.0
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
     - Autenticación: token personal de Sanctum en `Authorization: Bearer <token>` (obtenido en `POST /auth/login`).
     - Todos los errores usan el mismo formato `{ "error": { "code", "message", "details" } }`.
     - Fechas de vencimiento en `YYYY-MM-DD`; "hoy" se calcula en `America/Bogota` (S-13). Un lote que vence hoy aún se puede dispensar (S-14).
-    - Ningún endpoint de dispensación expone nombre ni documento del paciente: solo `patient_id`.
+    - Ningún endpoint de dispensación expone nombre ni documento del paciente: solo `patient_id`. Los datos personales salen solo por `/patients/*`, enmascarados para el rol `auditor` (`masked: true`), y cada lectura queda en `patient_access_logs` (RN-10, S-68, S-75).
+    - Correlación (S-74): toda respuesta trae `X-Correlation-Id` (UUID generado por el servidor; es el que queda en logs y bitácoras). Si el cliente envía su propio `X-Correlation-Id` válido (`[A-Za-z0-9-]{1,64}`), se devuelve aparte en `X-Client-Correlation-Id`.
+    - Contraseña temporal (S-77): un usuario creado o restablecido por el admin tiene `must_change_password: true`; hasta cambiarla con `POST /auth/password`, todo endpoint salvo `auth/me`, `auth/password` y `auth/logout` responde 403 `CAMBIO_CLAVE_REQUERIDO`.
     - Límite de solicitudes: todos los endpoints autenticados admiten `API_RATE_LIMIT_PER_MINUTE` (120 por defecto) solicitudes por minuto por usuario; al superarlo responden 429 `DEMASIADAS_SOLICITUDES` con `Retry-After` (S-47).
 servers:
   - url: http://localhost:8080/api/v1
@@ -19,6 +21,8 @@ tags:
   - name: Dispensación
   - name: Inventario
   - name: Traslados
+  - name: Pacientes
+  - name: Usuarios
 
 security:
   - bearerAuth: []
@@ -68,6 +72,39 @@ paths:
       responses:
         '204': { description: Token revocado }
         '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /auth/password:
+    post:
+      tags: [Autenticación]
+      summary: Cambiar la propia contraseña (S-77)
+      description: >-
+        Cualquier usuario autenticado. Exige la contraseña actual; la nueva debe tener 12+ caracteres con
+        letras y números, máximo 72 bytes, ser distinta de la actual y venir confirmada. Quita
+        `must_change_password`, revoca los demás tokens del usuario (conserva el de esta petición) y
+        audita `user.password_changed`. Límite: 5 por minuto por usuario.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password, password_confirmation]
+              properties:
+                current_password: { type: string }
+                password: { type: string, minLength: 12, description: 'Máximo 72 bytes (una tilde ocupa 2)' }
+                password_confirmation: { type: string }
+      responses:
+        '200':
+          description: Contraseña cambiada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/me:
     get:
@@ -190,7 +227,9 @@ paths:
     get:
       tags: [Dispensación]
       summary: Consultar una dispensación
-      description: 'Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.'
+      description: >-
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`. Registra `patient.dispensation_view` en
+        `patient_access_logs` (S-75). Para el auditor, `rejection_reason` (texto libre) es `null`.
       parameters:
         - $ref: '#/components/parameters/DispensationId'
       responses:
@@ -708,6 +747,222 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /patients/search:
+    post:
+      tags: [Pacientes]
+      summary: Buscar un paciente por documento (exacta, S-69)
+      description: >-
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `medico`, `auditor` (enmascarado). Búsqueda exacta por
+        HMAC del documento (acepta puntos, guiones y espacios); va por POST para que el documento no quede en
+        URLs ni logs de acceso. Encontrado → `patient.search` en `patient_access_logs`; sin resultado →
+        `patient.search_not_found` en `audit_logs` (sin el número). Límite: 30 por minuto por usuario.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_type, document_number]
+              properties:
+                document_type: { type: string, enum: [CC, TI, CE, RC, PA] }
+                document_number: { type: string, minLength: 3, maxLength: 30, pattern: '^[0-9A-Za-z .-]+$', example: 1.032.456.789 }
+      responses:
+        '200':
+          description: 'Cero o un paciente'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    maxItems: 1
+                    items: { $ref: '#/components/schemas/Patient' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /patients/{id}:
+    get:
+      tags: [Pacientes]
+      summary: Consultar un paciente
+      description: >-
+        Mismos roles que la búsqueda; admin no. Registra `patient.view` (con `masked`). Un 403 o 404 no se registra.
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Paciente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Patient' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /patients/{id}/prescriptions:
+    get:
+      tags: [Pacientes]
+      summary: Prescripciones del paciente con cantidades pendientes
+      description: >-
+        Mismos roles que la búsqueda. Las 50 más recientes. Registra `patient.prescriptions`. Para el auditor,
+        `instructions` (texto libre) es `null`.
+      parameters:
+        - $ref: '#/components/parameters/PatientId'
+      responses:
+        '200':
+          description: Prescripciones
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Prescription' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /prescriptions:
+    post:
+      tags: [Pacientes]
+      summary: Crear una prescripción (solo médico, S-70)
+      description: >-
+        Nace `ACTIVA` con número `RX-` + ULID. `valid_until` posterior a hoy (Bogotá) y como máximo hoy + 365.
+        Audita `prescription.created` (sin las indicaciones).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patient_id, valid_until, items]
+              properties:
+                patient_id: { type: integer }
+                valid_until: { type: string, format: date }
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items:
+                    type: object
+                    required: [product_id, quantity]
+                    additionalProperties: false
+                    properties:
+                      product_id: { type: integer, description: 'Sin repetir en la prescripción' }
+                      quantity: { type: integer, minimum: 1, maximum: 10000 }
+                      instructions: { type: string, maxLength: 255, nullable: true }
+      responses:
+        '201':
+          description: Prescripción creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Prescription' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users:
+    get:
+      tags: [Usuarios]
+      summary: Listar usuarios (solo admin)
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de 50 usuarios (ordenados por nombre)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Usuarios]
+      summary: Crear un usuario (solo admin, S-72 y S-77)
+      description: >-
+        El correo se guarda en minúsculas y debe ser único. La contraseña es TEMPORAL: el usuario nace con
+        `must_change_password: true`. Audita `user.created` con el rol.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, role]
+              properties:
+                name: { type: string, minLength: 3, maxLength: 120 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12, description: 'Letras y números; máximo 72 bytes' }
+                role: { type: string, enum: [auxiliar_farmacia, regente_farmacia, medico, auditor, admin] }
+      responses:
+        '201':
+          description: Usuario creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /users/{id}:
+    patch:
+      tags: [Usuarios]
+      summary: Cambiar nombre, rol, estado o restablecer la contraseña (solo admin)
+      description: >-
+        Al menos un campo. Desactivar, cambiar el rol o restablecer la contraseña revoca todos los tokens del
+        usuario; una contraseña restablecida es temporal (`must_change_password: true`, auditada como
+        `user.password_reset`). Un admin no puede desactivarse ni quitarse el rol admin a sí mismo
+        (422 `OPERACION_NO_PERMITIDA`). El correo no se cambia. Sin DELETE: se desactiva.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 3, maxLength: 120 }
+                role: { type: string, enum: [auxiliar_farmacia, regente_farmacia, medico, auditor, admin] }
+                is_active: { type: boolean }
+                password: { type: string, minLength: 12, description: 'Contraseña temporal nueva; máximo 72 bytes' }
+      responses:
+        '200':
+          description: Usuario actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: '`VALIDACION` u `OPERACION_NO_PERMITIDA` (`details.reason = AUTOBLOQUEO`)'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -731,6 +986,30 @@ components:
       in: path
       required: true
       schema: { type: integer }
+    PatientId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    ClientCorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: 'Id propio del cliente (opcional, `[A-Za-z0-9-]{1,64}`). No reemplaza al del servidor: se devuelve en `X-Client-Correlation-Id` y se registra como `client_correlation_id` en los logs (S-74).'
+      schema: { type: string, maxLength: 64, pattern: '^[A-Za-z0-9-]+$' }
+
+  headers:
+    X-Correlation-Id:
+      description: UUID generado por el servidor para esta petición; es el que queda en logs, `audit_logs`, kardex, dispensaciones y `patient_access_logs`. Viene en TODAS las respuestas de `/api/*`.
+      schema: { type: string, format: uuid }
+    X-Client-Correlation-Id:
+      description: Eco del `X-Correlation-Id` enviado por el cliente, si era válido.
+      schema: { type: string }
 
   responses:
     Unauthenticated:
@@ -744,7 +1023,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     Forbidden:
-      description: '`NO_AUTORIZADO`: el rol no tiene permiso'
+      description: '`NO_AUTORIZADO`: el rol no tiene permiso; o `CAMBIO_CLAVE_REQUERIDO`: el usuario tiene una contraseña temporal y debe cambiarla (S-77)'
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -802,6 +1081,8 @@ components:
                 - CONFLICTO_CONCURRENCIA
                 - TRASLADO_INVALIDO
                 - AJUSTE_INVALIDO
+                - OPERACION_NO_PERMITIDA
+                - CAMBIO_CLAVE_REQUERIDO
                 - ERROR_INTERNO
             message: { type: string, description: Mensaje en español para el usuario final }
             details: { type: object, additionalProperties: true }
@@ -813,6 +1094,55 @@ components:
         name: { type: string }
         email: { type: string }
         role: { type: string, enum: [auxiliar_farmacia, regente_farmacia, medico, auditor, admin] }
+        is_active: { type: boolean }
+        must_change_password: { type: boolean, description: 'true = contraseña temporal; el frontend debe llevar a cambiarla (S-77)' }
+
+    Patient:
+      type: object
+      description: >-
+        Mismas claves para todos los roles. Con `masked: true` (auditor): documento `******` + últimos 4,
+        nombres con la inicial de cada palabra (`J*** P***`), `birth_date` y `phone` en `null` (S-68).
+      properties:
+        id: { type: integer }
+        document_type: { type: string, enum: [CC, TI, CE, RC, PA] }
+        document_number: { type: string, example: '******6789' }
+        first_name: { type: string, example: 'J***' }
+        last_name: { type: string, example: 'P***' }
+        birth_date: { type: string, format: date, nullable: true }
+        phone: { type: string, nullable: true }
+        masked: { type: boolean }
+
+    PrescriptionItem:
+      type: object
+      properties:
+        id: { type: integer, description: 'prescription_item_id para POST /dispensations' }
+        product:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            name: { type: string }
+            is_controlled: { type: boolean }
+        quantity_prescribed: { type: integer }
+        quantity_dispensed: { type: integer }
+        quantity_reserved: { type: integer, description: 'En dispensaciones PENDIENTE_AUTORIZACION (S-31)' }
+        quantity_available: { type: integer, description: 'prescrito - entregado - reservado' }
+        instructions: { type: string, nullable: true, description: 'null para el auditor (texto libre)' }
+
+    Prescription:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string, example: RX-01JA2B3C4D5E6F7G8H9J0K1M2N }
+        patient_id: { type: integer }
+        status: { type: string, enum: [ACTIVA, COMPLETADA, ANULADA] }
+        is_current: { type: boolean, description: 'ACTIVA y valid_until >= hoy (Bogotá), S-21' }
+        issued_at: { type: string, format: date-time }
+        valid_until: { type: string, format: date }
+        prescriber: { $ref: '#/components/schemas/UserSummary' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PrescriptionItem' }
 
     UserSummary:
       type: object
