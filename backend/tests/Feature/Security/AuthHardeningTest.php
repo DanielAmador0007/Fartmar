@@ -6,8 +6,10 @@
 | formados, límite de intentos de login y no enumeración de cuentas.
 */
 
+use App\Domain\Auth\LoginService;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Testing\TestResponse;
 use Laravel\Sanctum\Sanctum;
 
@@ -141,4 +143,34 @@ it('login no revela si el correo existe ni si el usuario está inactivo', functi
         ->getContent());
 
     expect($bodies->unique())->toHaveCount(1);
+});
+
+/*
+| Revisión de la Fase 4 (A1): enumeración de correos por tiempo.
+*/
+
+it('con el costo de producción (12) un correo inexistente no ejecuta Hash::make: usa el hash de relleno constante', function () {
+    config(['hashing.bcrypt.rounds' => 12]);
+    User::factory()->create(['email' => 'existe.tiempo@fartmar.test']);
+    $proxy = Mockery::mock(app('hash')); // proxy: lo no esperado pasa al HashManager real
+    $proxy->shouldNotReceive('make');
+    Hash::swap($proxy);
+
+    $this->postJson('/api/v1/auth/login', ['email' => 'nadie.tiempo@fartmar.test', 'password' => 'x'])->assertUnauthorized();
+
+    expect(password_get_info(LoginService::dummyHash())['options']['cost'] ?? null)->toBe(12);
+});
+
+it('con otro costo el hash de relleno se calcula una sola vez (caché) y con ese mismo costo', function () {
+    config(['hashing.bcrypt.rounds' => 5]);
+    $real = app('hash');
+    $proxy = Mockery::mock($real);
+    $proxy->shouldReceive('make')->once()->andReturnUsing(fn (string $value) => $real->make($value));
+    Hash::swap($proxy);
+
+    foreach (['uno', 'dos', 'tres'] as $who) {
+        $this->postJson('/api/v1/auth/login', ['email' => "{$who}.nadie@fartmar.test", 'password' => 'x'])->assertUnauthorized();
+    }
+
+    expect(password_get_info(LoginService::dummyHash())['options']['cost'] ?? null)->toBe(5);
 });

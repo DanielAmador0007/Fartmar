@@ -131,8 +131,6 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
 - **[Bajo · Fase 7] Headers de seguridad** (CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`) en Nginx; hoy la
   API corre con el servidor embebido de PHP.
-- **[Bajo] Primer login de cada worker** tarda más (se genera el hash ficticio para igualar tiempos); diferencia
-  medible solo en la primera petición del proceso.
 - Restos de Docker de la Fase 0 que Daniel puede borrar a mano si quiere:
   `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`.
 

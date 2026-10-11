@@ -7,6 +7,7 @@ use App\Domain\Exceptions\InvalidCredentialsException;
 use App\Domain\Patients\DocumentHasher;
 use App\Models\User;
 use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
@@ -15,7 +16,10 @@ use Illuminate\Support\Str;
  */
 final class LoginService
 {
-    private static ?string $dummyHash = null;
+    /** bcrypt costo 12 de 64 caracteres aleatorios que nadie conoce (ver dummyHash()). */
+    private const DUMMY_HASH = '$2y$12$SOBGEOY9foC4ZHE9uusRyeXgCedEm3Rzbe1ALgWrV7N3rPF5P1f16';
+
+    private const DUMMY_HASH_ROUNDS = 12;
 
     public function __construct(private readonly AuditLogger $audit) {}
 
@@ -77,9 +81,27 @@ final class LoginService
         return hash_hmac('sha256', 'login-email:'.mb_strtolower(trim($email)), DocumentHasher::key());
     }
 
-    private static function dummyHash(): string
+    /**
+     * Hash de relleno para comparar cuando el correo no existe, con el MISMO
+     * costo bcrypt que las contraseñas reales: así un correo inexistente
+     * cuesta un bcrypt, igual que uno existente (no se puede enumerar por
+     * tiempo).
+     *
+     * - Costo 12 (producción y demo): constante precalculada de un valor
+     *   aleatorio descartado; no se llama a Hash::make en la petición.
+     * - Otro costo (p. ej. 4 en pruebas): se calcula UNA vez y queda en caché
+     *   con el costo en la clave. Antes se hacía Hash::make en cada petición
+     *   (la estática no sobrevive entre peticiones): 2 bcrypt vs 1.
+     */
+    public static function dummyHash(): string
     {
-        return self::$dummyHash ??= Hash::make(Str::random(32));
+        $rounds = (int) config('hashing.bcrypt.rounds', 12);
+
+        if ($rounds === self::DUMMY_HASH_ROUNDS) {
+            return self::DUMMY_HASH;
+        }
+
+        return Cache::rememberForever("auth:dummy-hash:bcrypt:{$rounds}", fn (): string => Hash::make(Str::random(32)));
     }
 
     public function logout(User $user): void
