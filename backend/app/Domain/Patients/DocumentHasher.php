@@ -31,7 +31,12 @@ final class DocumentHasher
         return $type.':'.$number;
     }
 
-    private static function key(): string
+    /**
+     * Clave HMAC del servidor (PATIENT_HASH_KEY o APP_KEY). También la usa
+     * LoginService para el hash del correo de un login fallido (S-71), con
+     * un prefijo distinto para que nunca coincida con un hash de documento.
+     */
+    public static function key(): string
     {
         $key = config('fartmar.patient_hash_key') ?: config('app.key');
 
