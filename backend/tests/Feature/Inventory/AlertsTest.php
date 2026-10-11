@@ -6,9 +6,11 @@
 
 use App\Domain\Inventory\AdjustmentService;
 use App\Domain\Inventory\AlertService;
+use App\Models\Lot;
 use App\Models\Product;
 use App\Models\StockMinimum;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\TransferScenario;
@@ -132,3 +134,59 @@ it('L3: limit fuera de rango responde 422', function (string $limit) {
         ->assertStatus(422)
         ->assertJsonPath('error.code', 'VALIDACION');
 })->with(['0', '501', 'muchos']);
+
+it('RN-11: borde con ALERT_EXPIRY_DAYS configurado (30): el día 30 alerta, el 31 no', function () {
+    config(['fartmar.alert_expiry_days' => 30]);
+    $s = TransferScenario::make([[31, 1], [30, 1]]);
+
+    $alerts = app(AlertService::class)->expiringLots();
+
+    expect(array_map(fn ($a) => [$a->stock->lot_id, $a->daysToExpire], $alerts))->toBe([[$s->lots[1]->id, 30]])
+        ->and(app(AlertService::class)->countExpiringLots())->toBe(1);
+});
+
+it('RN-11 con fechas relativas: al pasar los días el lote entra a la ventana, vence y deja de cubrir el mínimo', function () {
+    // Un solo lote de 5 u. que vence en 91 días; mínimo de 5 (igual: no alerta).
+    $s = TransferScenario::make([[91, 5]]);
+    StockMinimum::query()->create(['warehouse_id' => $s->origin->id, 'product_id' => $s->product->id, 'min_quantity' => 5]);
+    // S-51: un mínimo de 0 nunca alerta, ni sin existencias ni con todo vencido.
+    StockMinimum::query()->create(['warehouse_id' => $s->origin->id, 'product_id' => Product::factory()->create()->id, 'min_quantity' => 0]);
+    $service = app(AlertService::class);
+    $lot = $s->lots[0];
+
+    // Hoy: día 91, fuera de la ventana; stock == mínimo.
+    expect($service->expiringLots())->toBe([])
+        ->and($service->lowStock())->toBe([]);
+
+    // Mañana: día 90, entra.
+    $this->travel(1)->days();
+    expect(array_map(fn ($a) => [$a->stock->lot_id, $a->daysToExpire, $a->isExpired()], $service->expiringLots()))
+        ->toBe([[$lot->id, 90, false]])
+        ->and($service->lowStock())->toBe([]);
+
+    // Día del vencimiento: vence HOY, sigue siendo usable (cuenta para el mínimo).
+    $this->travel(90)->days();
+    expect(array_map(fn ($a) => [$a->daysToExpire, $a->isExpired()], $service->expiringLots()))->toBe([[0, false]])
+        ->and($service->lowStock())->toBe([]);
+
+    // Un día después: vencido (días negativos) y ya no cubre el mínimo.
+    $this->travel(1)->days();
+    expect(array_map(fn ($a) => [$a->daysToExpire, $a->isExpired()], $service->expiringLots()))->toBe([[-1, true]])
+        ->and(array_map(fn ($a) => [$a->product->id, $a->available, $a->shortfall()], $service->lowStock()))
+        ->toBe([[$s->product->id, 0, 5]]);
+});
+
+it('RN-11: "hoy" de las alertas es el día de Bogotá, no el de UTC (S-13)', function () {
+    // 2026-10-12 03:00 UTC = 2026-10-11 22:00 en Bogotá: un lote que vence
+    // el 11 aún vence HOY (no vencido) aunque en UTC ya sea 12.
+    $this->travelTo(CarbonImmutable::parse('2026-10-12 03:00:00', 'UTC'));
+    $s = TransferScenario::make([]);
+    $lot = Lot::factory()->for($s->product)->create(['expires_at' => '2026-10-11']);
+    app(AdjustmentService::class)->adjust($s->regente, $s->origin->id, $lot->id, 3, 'Conteo físico');
+
+    expect(array_map(fn ($a) => [$a->daysToExpire, $a->isExpired()], app(AlertService::class)->expiringLots()))->toBe([[0, false]]);
+
+    // 05:00 UTC = medianoche en Bogotá: ahora sí está vencido.
+    $this->travelTo(CarbonImmutable::parse('2026-10-12 05:00:00', 'UTC'));
+    expect(array_map(fn ($a) => [$a->daysToExpire, $a->isExpired()], app(AlertService::class)->expiringLots()))->toBe([[-1, true]]);
+});
