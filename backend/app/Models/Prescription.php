@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Inventory\BusinessDate;
 use App\Enums\PrescriptionStatus;
 use Carbon\CarbonImmutable;
 use Database\Factories\PrescriptionFactory;
@@ -40,6 +41,16 @@ class Prescription extends Model
             'valid_until' => 'immutable_date',
             'status' => PrescriptionStatus::class,
         ];
+    }
+
+    /**
+     * Vigente (S-21): ACTIVA y valid_until >= hoy en zona de negocio. Es la
+     * misma regla que valida DispenseService antes de dispensar.
+     */
+    public function isCurrent(): bool
+    {
+        return $this->status === PrescriptionStatus::Activa
+            && $this->valid_until->toDateString() >= BusinessDate::today()->toDateString();
     }
 
     /** @return BelongsTo<Patient, $this> */

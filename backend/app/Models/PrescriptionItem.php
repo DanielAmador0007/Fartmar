@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property int $quantity_prescribed
  * @property int $quantity_dispensed Acumulado de dispensaciones parciales.
  * @property string|null $instructions
+ * @property-read int|string|null $quantity_reserved Solo con withSum (PrescriptionQuery): unidades en dispensaciones pendientes.
  */
 class PrescriptionItem extends Model
 {

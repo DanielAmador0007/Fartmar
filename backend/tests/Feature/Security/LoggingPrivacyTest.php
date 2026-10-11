@@ -166,6 +166,7 @@ it('una dispensación no deja el nombre ni el documento del paciente en los logs
     Sanctum::actingAs($s->auxiliar);
 
     $this->postJson('/api/v1/dispensations', $s->payload(2), ['Idempotency-Key' => (string) Str::uuid()])->assertCreated();
+    $this->getJson("/api/v1/patients/{$s->patient->id}")->assertOk();
 
     $output = $logs->output();
     expect($logs->records())->not->toBeEmpty();

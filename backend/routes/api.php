@@ -5,6 +5,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DispensationController;
 use App\Http\Controllers\InventoryAdjustmentController;
 use App\Http\Controllers\KardexController;
+use App\Http\Controllers\PatientController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TransferController;
 use App\Http\Controllers\TransferDiscrepancyController;
@@ -20,6 +21,8 @@ use Illuminate\Support\Facades\Route;
 Route::pattern('dispensation', '[1-9][0-9]{0,17}');
 Route::pattern('transfer', '[1-9][0-9]{0,17}');
 Route::pattern('discrepancy', '[1-9][0-9]{0,17}');
+Route::pattern('patient', '[1-9][0-9]{0,17}');
+Route::pattern('user', '[1-9][0-9]{0,17}');
 
 Route::prefix('v1')->group(function (): void {
     // Limitador "login" (AppServiceProvider): por correo + IP y por IP.
@@ -64,5 +67,12 @@ Route::prefix('v1')->group(function (): void {
         Route::post('inventory-adjustments', [InventoryAdjustmentController::class, 'store'])->name('inventory-adjustments.store');
         Route::get('kardex', [KardexController::class, 'index'])->name('kardex.index');
         Route::get('alerts', [AlertController::class, 'index'])->name('alerts.index');
+
+        // Pacientes (RN-10): enmascarado por rol y bitácora de cada lectura.
+        // Búsqueda por POST para que el documento no quede en URLs ni logs de acceso (S-69).
+        Route::post('patients/search', [PatientController::class, 'search'])->name('patients.search');
+        Route::get('patients/{patient}', [PatientController::class, 'show'])->name('patients.show');
+        Route::get('patients/{patient}/prescriptions', [PatientController::class, 'prescriptions'])
+            ->name('patients.prescriptions');
     });
 });
