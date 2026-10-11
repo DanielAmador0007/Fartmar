@@ -4,8 +4,12 @@
 | API de ajustes de inventario y consulta de kardex (RN-06).
 */
 
+use App\Domain\Transfers\TransferService;
+use App\Enums\DiscrepancyResolution;
 use App\Enums\KardexType;
 use App\Models\KardexMovement;
+use App\Models\TransferDiscrepancy;
+use App\Models\TransferItemLot;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -142,3 +146,49 @@ it('GET kardex filtra por rango de fechas en hora de Bogotá y pagina', function
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('meta.total', 3);
 });
+
+it('L5: GET kardex filtra por documento de referencia (reference_type + reference_id)', function () {
+    $s = TransferScenario::make([[30, 10]]);
+    $transfer = $s->dispatched(5);
+    $s->dispatched(1); // Otro traslado: su salida no debe aparecer al filtrar por id.
+    $service = app(TransferService::class);
+    $lotId = TransferItemLot::query()->whereIn('transfer_item_id', $transfer->items()->select('id'))->value('id');
+    $service->receive($transfer, $s->auxiliar, [$lotId => 3]);
+    $discrepancy = TransferDiscrepancy::query()->sole();
+    $service->resolveDiscrepancy($discrepancy, $s->regente2, DiscrepancyResolution::ReintegrarOrigen, 'Quedaron en el origen');
+
+    Sanctum::actingAs(User::factory()->auditor()->create());
+
+    // Del traslado: salida en origen y entrada en destino (no los del otro traslado).
+    $types = collect(test()->getJson("/api/v1/kardex?reference_type=transfer&reference_id={$transfer->id}")->assertOk()->json('data'))
+        ->map(fn (array $m) => [$m['type'], $m['warehouse']['id'], $m['reference']['id']])
+        ->all();
+    expect($types)->toEqualCanonicalizing([
+        ['SALIDA_TRASLADO', $s->origin->id, $transfer->id],
+        ['ENTRADA_TRASLADO', $s->destination->id, $transfer->id],
+    ]);
+
+    // De la discrepancia: el AJUSTE de reintegro.
+    test()->getJson("/api/v1/kardex?reference_type=transfer_discrepancy&reference_id={$discrepancy->id}")
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.type', 'AJUSTE')
+        ->assertJsonPath('data.0.signed_quantity', 2);
+
+    // Solo el tipo: todos los movimientos de traslados (3 de los dos traslados).
+    test()->getJson('/api/v1/kardex?reference_type=transfer')->assertOk()->assertJsonCount(3, 'data');
+});
+
+it('L5: reference_type debe ser un documento conocido y reference_id exige el tipo (422)', function (string $query, string $field) {
+    Sanctum::actingAs(User::factory()->auditor()->create());
+
+    test()->getJson("/api/v1/kardex?{$query}")
+        ->assertStatus(422)
+        ->assertJsonPath('error.code', 'VALIDACION')
+        ->assertJsonStructure(['error' => ['details' => ['fields' => [$field]]]]);
+})->with([
+    'tipo desconocido' => ['reference_type=user', 'reference_type'],
+    'clase PHP en vez de alias' => ['reference_type=App%5CModels%5CTransfer', 'reference_type'],
+    'id sin tipo' => ['reference_id=5', 'reference_type'],
+    'id inválido' => ['reference_type=transfer&reference_id=0', 'reference_id'],
+]);

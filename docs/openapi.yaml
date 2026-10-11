@@ -655,6 +655,13 @@ paths:
         - { name: product_id, in: query, schema: { type: integer } }
         - { name: lot_id, in: query, schema: { type: integer } }
         - { name: type, in: query, schema: { type: string, enum: [ENTRADA, SALIDA_DISPENSACION, SALIDA_TRASLADO, ENTRADA_TRASLADO, AJUSTE] } }
+        - name: reference_type
+          in: query
+          description: |
+            Documento que originó el movimiento. `transfer` trae `SALIDA_TRASLADO`/`ENTRADA_TRASLADO`; `transfer_discrepancy`
+            el `AJUSTE` de reintegro; `dispensation` las `SALIDA_DISPENSACION`. Obligatorio si se envía `reference_id`.
+          schema: { type: string, enum: [dispensation, transfer, transfer_discrepancy] }
+        - { name: reference_id, in: query, description: 'Id del documento (requiere `reference_type`)', schema: { type: integer, minimum: 1 } }
         - { name: from, in: query, schema: { type: string, format: date } }
         - { name: to, in: query, schema: { type: string, format: date } }
         - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
