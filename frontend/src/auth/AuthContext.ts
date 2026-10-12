@@ -4,8 +4,11 @@ import { permissions, type Permission } from './permissions'
 
 export interface AuthState {
   // loading = hay token y se está consultando /auth/me
-  status: 'loading' | 'anonymous' | 'authenticated'
+  // error = /auth/me falló por red o 5xx: el token se conserva y se puede reintentar
+  status: 'loading' | 'anonymous' | 'authenticated' | 'error'
   user: User | null
+  sessionError: unknown
+  retrySession: () => void
   login: (email: string, password: string) => Promise<User>
   logout: () => Promise<void>
   // Tras cambiar la clave, la API devuelve el usuario actualizado.

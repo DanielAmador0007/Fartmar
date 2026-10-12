@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { setSessionHandlers } from '../api/client'
+import { ApiError, setSessionHandlers } from '../api/client'
 import { tokenStorage } from '../api/tokenStorage'
 import type { User } from '../api/types'
 import { AuthContext, type AuthState } from './AuthContext'
@@ -10,6 +10,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [user, setUser] = useState<User | null>(null)
   const [status, setStatus] = useState<AuthState['status']>(() => (tokenStorage.get() ? 'loading' : 'anonymous'))
+  const [sessionError, setSessionError] = useState<unknown>(null)
 
   // Al salir se vacía la caché de consultas: no quedan datos de pacientes en memoria.
   const endSession = useCallback(() => {
@@ -38,8 +39,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(me)
         setStatus('authenticated')
       })
-      .catch(() => {
-        if (!cancelled) endSession()
+      .catch((error: unknown) => {
+        if (cancelled) return
+        // Solo un 401 invalida la sesión. Sin red o con un 5xx el token puede
+        // seguir siendo válido: se conserva y se ofrece reintentar (L1).
+        if (error instanceof ApiError && error.status === 401) {
+          endSession()
+        } else {
+          setSessionError(error)
+          setStatus('error')
+        }
       })
     return () => {
       cancelled = true
@@ -54,6 +63,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return response.user
   }, [])
 
+  const retrySession = useCallback(() => {
+    setSessionError(null)
+    setStatus('loading')
+  }, [])
+
   const logout = useCallback(async () => {
     try {
       await authApi.logout()
@@ -64,8 +78,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [endSession])
 
   const value = useMemo<AuthState>(
-    () => ({ status, user, login, logout, updateUser: setUser }),
-    [status, user, login, logout],
+    () => ({ status, user, sessionError, retrySession, login, logout, updateUser: setUser }),
+    [status, user, sessionError, retrySession, login, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

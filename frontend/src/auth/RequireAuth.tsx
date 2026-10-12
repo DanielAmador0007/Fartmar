@@ -1,15 +1,31 @@
 import type { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router'
-import { Loading } from '../components/ui'
+import { ErrorAlert, Loading } from '../components/ui'
 import { useAuth } from './AuthContext'
 import { permissions, type Permission } from './permissions'
 
 // Exige sesión. Con contraseña temporal solo deja ver la pantalla de cambio (S-77).
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { status, user } = useAuth()
+  const { status, user, sessionError, retrySession, logout } = useAuth()
   const location = useLocation()
 
   if (status === 'loading') return <Loading label="Cargando sesión…" />
+  if (status === 'error') {
+    return (
+      <main className="auth-page">
+        <section className="card auth-card">
+          <h1>No se pudo recuperar la sesión</h1>
+          <ErrorAlert error={sessionError} />
+          <button type="button" className="primary" onClick={retrySession}>
+            Reintentar
+          </button>
+          <button type="button" className="link" onClick={() => void logout()}>
+            Cerrar sesión
+          </button>
+        </section>
+      </main>
+    )
+  }
   if (!user) return <Navigate to="/login" replace />
   if (user.must_change_password && location.pathname !== '/cambiar-clave') {
     return <Navigate to="/cambiar-clave" replace />

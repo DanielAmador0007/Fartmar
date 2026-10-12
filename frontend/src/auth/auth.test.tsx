@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { tokenStorage } from '../api/tokenStorage'
 import type { Role } from '../api/types'
 import { apiError, mockApi } from '../test/http'
@@ -43,6 +43,33 @@ describe('Login', () => {
     expect(alert).toHaveTextContent('Correo o contraseña incorrectos.')
     expect(alert).toHaveTextContent('Código de soporte: corr-test-123')
     expect(tokenStorage.get()).toBeNull()
+  })
+
+  it('si /auth/me falla por red al recargar, conserva el token y permite reintentar', async () => {
+    mockApi({
+      ...meRoute(makeUser('auditor')),
+      'GET /transfers': { body: { data: [], meta: { current_page: 1, last_page: 1, per_page: 25, total: 0 } } },
+      'GET /transfer-discrepancies': { body: { data: [], meta: { current_page: 1, last_page: 1, per_page: 50, total: 0 } } },
+    })
+    // Simula la caída de red en el primer intento.
+    const realFetch = globalThis.fetch
+    let first = true
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      if (first) {
+        first = false
+        return Promise.reject(new TypeError('Failed to fetch'))
+      }
+      return realFetch(input, init)
+    })
+    renderApp('/traslados')
+
+    expect(await screen.findByRole('heading', { name: 'No se pudo recuperar la sesión' })).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('No hay conexión con el servidor')
+    expect(tokenStorage.get()).toBe('tok-test')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reintentar' }))
+
+    expect(await screen.findByRole('heading', { name: 'Traslados' })).toBeInTheDocument()
   })
 
   it('un 401 en cualquier consulta cierra la sesión y vuelve a login', async () => {
