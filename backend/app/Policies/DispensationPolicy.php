@@ -19,6 +19,12 @@ class DispensationPolicy
         return $user->isActiveWithRole(Role::AuxiliarFarmacia, Role::RegenteFarmacia);
     }
 
+    /** Listado: mismos lectores que el detalle (farmacia y auditor). */
+    public function viewAny(User $user): bool
+    {
+        return $user->isActiveWithRole(Role::AuxiliarFarmacia, Role::RegenteFarmacia, Role::Auditor);
+    }
+
     public function view(User $user, Dispensation $dispensation): bool
     {
         return $user->isActiveWithRole(Role::AuxiliarFarmacia, Role::RegenteFarmacia, Role::Auditor);

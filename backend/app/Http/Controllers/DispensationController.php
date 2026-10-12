@@ -2,18 +2,22 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Dispensing\DispensationQuery;
 use App\Domain\Dispensing\DispenseService;
 use App\Domain\Patients\PatientAccessLogger;
+use App\Http\Requests\IndexDispensationRequest;
 use App\Http\Requests\PreviewDispensationRequest;
 use App\Http\Requests\RejectDispensationRequest;
 use App\Http\Requests\StoreDispensationRequest;
 use App\Http\Resources\DispensationResource;
+use App\Http\Resources\DispensationSummaryResource;
 use App\Http\Resources\FefoPreviewResource;
 use App\Models\Dispensation;
 use App\Models\Product;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Gate;
 
 /**
@@ -45,6 +49,15 @@ class DispensationController extends Controller
         }
 
         return $response;
+    }
+
+    /**
+     * Listado paginado con datos mínimos del paciente (solo ID): no escribe
+     * en la bitácora de accesos (S-87).
+     */
+    public function index(IndexDispensationRequest $request, DispensationQuery $query): AnonymousResourceCollection
+    {
+        return DispensationSummaryResource::collection($query->search($request->filters()));
     }
 
     public function show(Request $request, Dispensation $dispensation, PatientAccessLogger $accessLog): DispensationResource

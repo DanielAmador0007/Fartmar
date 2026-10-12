@@ -47,6 +47,7 @@ Route::prefix('v1')->group(function (): void {
 
         // Dispensación (RN-01..RN-06, RN-09). "preview" va antes de {dispensation}.
         Route::get('dispensations/preview', [DispensationController::class, 'preview'])->name('dispensations.preview');
+        Route::get('dispensations', [DispensationController::class, 'index'])->name('dispensations.index');
         Route::post('dispensations', [DispensationController::class, 'store'])->name('dispensations.store');
         Route::get('dispensations/{dispensation}', [DispensationController::class, 'show'])
             ->name('dispensations.show');

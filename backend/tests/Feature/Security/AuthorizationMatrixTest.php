@@ -53,6 +53,7 @@ function authorizationEndpoints(): array
         'POST dispensations' => [$pharmacy, fn (DispensingScenario $s) => test()->postJson(
             '/api/v1/dispensations', $s->payload(1), ['Idempotency-Key' => (string) Str::uuid()],
         )],
+        'GET dispensations' => [[...$pharmacy, Role::Auditor], fn () => test()->getJson('/api/v1/dispensations?status=PENDIENTE_AUTORIZACION')],
         'GET dispensations/{id}' => [[...$pharmacy, Role::Auditor], fn (DispensingScenario $s, int $id) => test()->getJson("/api/v1/dispensations/{$id}")],
         'POST dispensations/{id}/authorize' => [[Role::RegenteFarmacia], fn (DispensingScenario $s, int $id) => test()->postJson("/api/v1/dispensations/{$id}/authorize")],
         'POST dispensations/{id}/reject' => [[Role::RegenteFarmacia], fn (DispensingScenario $s, int $id) => test()->postJson(
