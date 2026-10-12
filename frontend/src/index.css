@@ -328,9 +328,9 @@ li.expiry-within30,
   background: #ffedd5;
 }
 
-tr.expiry-within90,
-li.expiry-within90,
-.legend .expiry-within90 {
+tr.expiry-withinAlert,
+li.expiry-withinAlert,
+.legend .expiry-withinAlert {
   background: #fef9c3;
 }
 

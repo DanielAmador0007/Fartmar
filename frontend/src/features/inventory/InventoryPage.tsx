@@ -6,7 +6,7 @@ import { formatDateTime } from '../../lib/format'
 import { useCatalog } from '../catalog/useCatalog'
 import { ProductSelect, WarehouseSelect } from '../catalog/WarehouseSelect'
 import { AdjustmentForm } from './AdjustmentForm'
-import { EXPIRY_LABEL, expiryLevel, todayInBogota } from './expiry'
+import { CRITICAL_DAYS, DEFAULT_ALERT_DAYS, expiryLabel, expiryLevel, todayInBogota } from './expiry'
 import { useAlerts, useInTransit, useStocks } from './inventoryApi'
 
 function AlertsPanel({ alerts }: { alerts: Alerts }) {
@@ -21,7 +21,7 @@ function AlertsPanel({ alerts }: { alerts: Alerts }) {
       ) : (
         <ul className="alert-list">
           {alerts.expiring_lots.map((a) => (
-            <li key={a.stock_id} className={`expiry-${expiryLevel(a.lot.expires_at, alerts.today, a.is_expired)}`}>
+            <li key={a.stock_id} className={`expiry-${expiryLevel(a.lot.expires_at, alerts.today, a.is_expired, alerts.expiry_days)}`}>
               {a.warehouse.code} · {a.product.name} · lote {a.lot.lot_number} · {a.quantity} u ·{' '}
               {a.is_expired ? `vencido hace ${-a.days_to_expire} días` : a.days_to_expire === 0 ? 'vence hoy' : `vence en ${a.days_to_expire} días`}
             </li>
@@ -89,6 +89,8 @@ export function InventoryPage() {
   const inTransit = useInTransit(warehouseId)
 
   const today = alerts.data?.today ?? todayInBogota()
+  // Ventana de alerta configurable en el backend (ALERT_EXPIRY_DAYS, RN-11).
+  const alertDays = alerts.data?.expiry_days ?? DEFAULT_ALERT_DAYS
   const lowStock = new Set((alerts.data?.low_stock ?? []).map((a) => `${a.warehouse.id}-${a.product.id}`))
 
   return (
@@ -119,8 +121,8 @@ export function InventoryPage() {
 
       <div className="legend">
         <span className="expiry-expired">Vencido</span>
-        <span className="expiry-within30">≤ 30 días</span>
-        <span className="expiry-within90">≤ 90 días</span>
+        <span className="expiry-within30">≤ {CRITICAL_DAYS} días</span>
+        <span className="expiry-withinAlert">≤ {alertDays} días</span>
         <span className="low-stock">Bajo mínimo</span>
       </div>
 
@@ -143,7 +145,7 @@ export function InventoryPage() {
             </thead>
             <tbody>
               {stocks.data.data.map((s) => {
-                const level = expiryLevel(s.lot.expires_at, today, s.lot.is_expired)
+                const level = expiryLevel(s.lot.expires_at, today, s.lot.is_expired, alertDays)
                 const isLow = lowStock.has(`${s.warehouse.id}-${s.product.id}`)
                 return (
                   <tr key={s.id} className={`expiry-${level}`}>
@@ -155,7 +157,7 @@ export function InventoryPage() {
                     <td>{s.lot.expires_at}</td>
                     <td className="num">{s.quantity}</td>
                     <td>
-                      {EXPIRY_LABEL[level]}
+                      {expiryLabel(level, alertDays)}
                       {isLow && <span className="badge badge-orange">Bajo mínimo</span>}
                     </td>
                   </tr>

@@ -52,8 +52,13 @@ describe('expiryLevel', () => {
     expect(expiryLevel('2026-10-10', '2026-10-11')).toBe('expired')
     expect(expiryLevel('2026-10-11', '2026-10-11')).toBe('within30')
     expect(expiryLevel('2026-11-10', '2026-10-11')).toBe('within30')
-    expect(expiryLevel('2026-11-11', '2026-10-11')).toBe('within90')
+    expect(expiryLevel('2026-11-11', '2026-10-11')).toBe('withinAlert')
     expect(expiryLevel('2027-01-10', '2026-10-11')).toBe('ok')
+  })
+
+  it('la ventana de alerta es configurable (alerts.expiry_days)', () => {
+    expect(expiryLevel('2026-12-20', '2026-10-11', false, 60)).toBe('ok')
+    expect(expiryLevel('2026-12-20', '2026-10-11', false, 120)).toBe('withinAlert')
   })
 })
 
@@ -65,7 +70,7 @@ describe('Inventario', () => {
     const table = within(await screen.findByRole('region', { name: 'Existencias' }))
     await waitFor(() => expect(table.getByText('L-VENC').closest('tr')).toHaveClass('expiry-expired'))
     expect(table.getByText('L-30').closest('tr')).toHaveClass('expiry-within30')
-    expect(table.getByText('L-90').closest('tr')).toHaveClass('expiry-within90')
+    expect(table.getByText('L-90').closest('tr')).toHaveClass('expiry-withinAlert')
     expect(table.getByText('L-LEJOS').closest('tr')).toHaveClass('expiry-ok')
     expect(table.getAllByText('Bajo mínimo')).toHaveLength(4)
 
@@ -88,6 +93,17 @@ describe('Inventario', () => {
     expect(within(screen.getByLabelText('Producto')).getAllByRole('option')).toHaveLength(3)
     expect(api.callsTo('GET', '/warehouses')[0].query.get('per_page')).toBe('100')
     expect(api.callsTo('GET', '/stocks').every((c) => !c.query.has('include_empty'))).toBe(true)
+  })
+
+  it('con expiry_days = 60 de la API, la leyenda y el resaltado usan 60 días', async () => {
+    mockApi(routes('auditor', { 'GET /alerts': { body: { data: { ...alerts, expiry_days: 60 } } } }))
+    renderApp('/inventario')
+
+    const table = within(await screen.findByRole('region', { name: 'Existencias' }))
+    // L-90 vence en 70 días: fuera de una ventana de 60.
+    await waitFor(() => expect(table.getByText('L-90').closest('tr')).toHaveClass('expiry-ok'))
+    expect(screen.getByText('≤ 60 días', { selector: '.legend span' })).toBeInTheDocument()
+    expect(screen.queryByText('≤ 90 días', { selector: '.legend span' })).not.toBeInTheDocument()
   })
 
   it('el auditor no ve el formulario de ajuste', async () => {
