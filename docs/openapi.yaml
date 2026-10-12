@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.5.0
+  version: 0.5.1
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
     - Autenticación: token personal de Sanctum en `Authorization: Bearer <token>` (obtenido en `POST /auth/login`).
     - Todos los errores usan el mismo formato `{ "error": { "code", "message", "details" } }`.
     - Fechas de vencimiento en `YYYY-MM-DD`; "hoy" se calcula en `America/Bogota` (S-13). Un lote que vence hoy aún se puede dispensar (S-14).
-    - Ningún endpoint de dispensación expone nombre ni documento del paciente: solo `patient_id`. Los datos personales salen solo por `/patients/*`, enmascarados para el rol `auditor` (`masked: true`), y cada lectura queda en `patient_access_logs` (RN-10, S-68, S-75).
+    - Ningún endpoint de dispensación expone nombre ni documento del paciente: el detalle trae solo `patient_id` y el listado ni eso (S-87). Los datos personales salen solo por `/patients/*`, enmascarados para el rol `auditor` (`masked: true`), y cada lectura queda en `patient_access_logs` (RN-10, S-68, S-75).
     - Correlación (S-74): toda respuesta trae `X-Correlation-Id` (UUID generado por el servidor; es el que queda en logs y bitácoras). Si el cliente envía su propio `X-Correlation-Id` válido (`[A-Za-z0-9-]{1,64}`), se devuelve aparte en `X-Client-Correlation-Id`.
     - Contraseña temporal (S-77): un usuario creado o restablecido por el admin tiene `must_change_password: true`; hasta cambiarla con `POST /auth/password`, todo endpoint salvo `auth/me`, `auth/password` y `auth/logout` responde 403 `CAMBIO_CLAVE_REQUERIDO`.
     - Límite de solicitudes: todos los endpoints autenticados admiten `API_RATE_LIMIT_PER_MINUTE` (120 por defecto) solicitudes por minuto por usuario; al superarlo responden 429 `DEMASIADAS_SOLICITUDES` con `Retry-After` (S-47).
@@ -130,10 +130,13 @@ paths:
         De la más reciente a la más antigua (`created_at`, luego `id`).
         Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
 
-        Privacidad (RN-10, S-87): cada fila es un resumen igual para todos los roles. Del paciente solo
-        va `patient_id` (sin nombre ni documento); no incluye los lotes entregados ni el motivo de rechazo.
+        Privacidad (RN-10, S-87): cada fila es un resumen igual para todos los roles, sin ningún dato del
+        paciente (ni siquiera `patient_id`, desde 0.5.1); no incluye los lotes entregados ni el motivo de rechazo.
         Por eso el listado **no** escribe en `patient_access_logs`; el detalle completo está en
         `GET /dispensations/{id}`, que sí registra el acceso.
+
+        Cada fila trae `allowed_actions` (misma regla que el detalle), calculado sin consultas extra:
+        el listado hace un número fijo de consultas (sin N+1) sin importar cuántas filas devuelva.
       parameters:
         - { name: status, in: query, schema: { type: string, enum: [PENDIENTE_AUTORIZACION, COMPLETADA, RECHAZADA] } }
         - { name: warehouse_id, in: query, schema: { type: integer, minimum: 1 } }
@@ -278,7 +281,8 @@ paths:
       tags: [Dispensación]
       summary: Autorizar un medicamento de control especial (RN-05)
       description: |
-        Solo `regente_farmacia` activo **distinto** de quien creó la dispensación. Al autorizar se asignan
+        Solo `regente_farmacia` activo **distinto** de quien creó la dispensación (`DispensationPolicy::authorize`;
+        el creador recibe 403 `SEGREGACION_FUNCIONES` antes de mirar el estado). Al autorizar se asignan
         los lotes FEFO, se descuenta el stock y se escribe el kardex (usuario = regente que autoriza).
         Se revalidan vigencia de la prescripción y existencias.
       parameters:
@@ -311,7 +315,7 @@ paths:
     post:
       tags: [Dispensación]
       summary: Rechazar un medicamento de control especial
-      description: Solo `regente_farmacia` distinto del creador. No mueve stock; libera la cantidad reservada.
+      description: Solo `regente_farmacia` activo distinto del creador (`DispensationPolicy::reject`; el creador recibe 403 `SEGREGACION_FUNCIONES`). No mueve stock; libera la cantidad reservada.
       parameters:
         - $ref: '#/components/parameters/DispensationId'
       requestBody:
@@ -1308,6 +1312,14 @@ components:
         rejected_at: { type: [string, 'null'], format: date-time }
         rejection_reason: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
+        allowed_actions:
+          type: array
+          description: |
+            Acciones que el usuario autenticado puede ejecutar ahora: solo si la dispensación está
+            `PENDIENTE_AUTORIZACION` **y** `DispensationPolicy` lo permite (regente activo distinto del creador, RN-05).
+            En cualquier otro caso es `[]`. Solo informa qué botones mostrar; cada endpoint vuelve a autorizar y validar.
+          items: { type: string, enum: [authorize, reject] }
+          example: [authorize, reject]
 
     LotAllocation:
       type: object
@@ -1398,12 +1410,11 @@ components:
 
     DispensationSummary:
       type: object
-      description: Fila del listado de dispensaciones. Sin datos personales del paciente, sin lotes y sin motivo de rechazo (S-87).
+      description: Fila del listado de dispensaciones. Sin ningún dato del paciente (ni su ID), sin lotes y sin motivo de rechazo (S-87).
       properties:
         id: { type: integer }
         status: { type: string, enum: [PENDIENTE_AUTORIZACION, COMPLETADA, RECHAZADA] }
         requires_authorization: { type: boolean }
-        patient_id: { type: integer }
         prescription:
           type: object
           properties:
@@ -1430,6 +1441,14 @@ components:
         rejected_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
         rejected_at: { type: [string, 'null'], format: date-time }
         created_at: { type: string, format: date-time }
+        allowed_actions:
+          type: array
+          description: |
+            Acciones que el usuario autenticado puede ejecutar ahora: solo si la dispensación está
+            `PENDIENTE_AUTORIZACION` **y** `DispensationPolicy` lo permite (regente activo distinto del creador, RN-05).
+            En cualquier otro caso es `[]`. Solo informa qué botones mostrar; cada endpoint vuelve a autorizar y validar.
+          items: { type: string, enum: [authorize, reject] }
+          example: [authorize, reject]
 
     LotSummary:
       type: object

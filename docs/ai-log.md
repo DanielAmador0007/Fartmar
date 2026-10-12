@@ -475,3 +475,23 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
 - Riesgos o cosas que podrían estar mal:
   - La búsqueda de productos pide como máximo 20 resultados; con un catálogo grande hay que afinar `q`.
   - La prueba de humo de la bandeja devolvió lista vacía (no hay pendientes en la BD de demo); el flujo con datos se cubrió solo con pruebas simuladas.
+
+### 2026-10-11 — Fase 5: revisión senior (M2, L7, L8) — `allowed_actions` en dispensaciones
+- Agente: backend-dominio
+- Qué generó la IA:
+  - `DispensationPolicy`: `decide` se separó en `authorize` y `reject`. Ambas exigen regente activo **y distinto del creador**; si es el creador niegan con `BusinessDenial` (`SEGREGACION_FUNCIONES`, `reason: MISMO_USUARIO`), igual que `TransferPolicy::approve`. `RejectDispensationRequest::authorize()` devuelve la respuesta de la Policy (no un bool) para conservar ese código.
+  - `App\Domain\Dispensing\DispensationActions` (gemelo de `TransferActions`): si la dispensación está `PENDIENTE_AUTORIZACION`, devuelve las acciones que la Policy permite; si no, `[]`.
+  - `allowed_actions` en `DispensationResource` y `DispensationSummaryResource` (ambos usan `DispensationResource::allowedActions()`).
+  - Se quitó `patient_id` de `DispensationSummaryResource` (S-87 actualizado). El detalle lo conserva.
+  - Migración con índice `(warehouse_id, status, created_at)` en `dispensations`: existía `(status, created_at)` pero ninguno empezaba por `warehouse_id`.
+  - Pruebas: acciones por usuario y estado en listado y detalle (creador regente: nada; otro regente: `authorize`, `reject`; auxiliar y auditor: nada; COMPLETADA/RECHAZADA: nada), rechazo del creador → 403 `SEGREGACION_FUNCIONES`, y conteo de consultas del listado (6 vs 18 filas: misma cantidad, ≤ 9).
+  - OpenAPI 0.5.1.
+- Qué decisión tomó y por qué:
+  - El **estado** no va en la Policy (igual que en traslados): la Policy responde "¿esta persona puede decidir esta dispensación?" y el servicio responde "¿se puede decidir ahora?" (`TRANSICION_INVALIDA`). `DispensationActions` combina las dos para el frontend.
+  - Efecto colateral aceptado: el creador que intenta autorizar una dispensación ya cerrada ahora recibe 403 `SEGREGACION_FUNCIONES` (antes 409 `TRANSICION_INVALIDA`), porque la Policy se evalúa antes que el servicio.
+  - Flujo en lenguaje simple: al listar o ver una dispensación, el servidor mira dos cosas sin ir a la BD: si está esperando autorización y si quien pregunta es un regente activo que no la creó. Si ambas se cumplen, le dice al frontend "puedes autorizar o rechazar". Cuando el regente pulsa el botón, el endpoint vuelve a preguntar a la Policy y el servicio bloquea la fila y valida todo otra vez (y la BD también).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué la prueba de N+1 compara 6 vs 18 filas y no 3 vs 12: si ninguna fila tiene `authorized_by`, Eloquent no lanza la consulta de `authorizer` y la cuenta cambia por eso, no por N+1.
+  - `allowed_actions` es una pista de interfaz; la autorización real sigue en el endpoint, el servicio y el CHECK de la BD.
+- Riesgos o cosas que podrían estar mal:
+  - El frontend (`api/types.ts`, `DecisionControls`) aún no usa `allowed_actions` y `DispensationSummary` sigue declarando `patient_id`; hay que ajustar el tipo y pasar a decidir los botones con `allowed_actions`.
