@@ -414,3 +414,25 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - El admin sigue siendo de confianza (S-77).
   - La medición por HTTP en el servidor embebido tiene picos en la primera petición de cada worker (arranque del proceso), sin relación con el hash; en régimen estable correo existente e inexistente rondan 0,33 s.
   - El commit `7cda64c` (B4) deja una prueba en rojo hasta `768fd99` (B1); si se hace `git bisect`, tenerlo en cuenta.
+
+### 2026-10-11 — Fase 5: frontend React
+- Agente: frontend-react
+- Qué generó la IA:
+  - `src/api/`: cliente `fetch` único (`client.ts`) con Bearer, `ApiError` normalizado (errores de la API, respuestas no JSON y fallos de red), `X-Correlation-Id` y manejo de 401 (logout) y 403 `CAMBIO_CLAVE_REQUERIDO`; mapa código → mensaje en español (`errors.ts`); tipos de la API v0.4.0; token en `sessionStorage`.
+  - `src/auth/`: `AuthProvider` (login, `/auth/me`, logout que vacía la caché), cambio de clave obligatorio, `permissions.ts` (qué muestra cada rol) y rutas protegidas.
+  - `src/features/`: dispensación (búsqueda por documento, prescripciones vigentes, vista previa FEFO con `GET /dispensations/preview`, confirmación idempotente, pantalla de autorizaciones), pacientes, traslados (lista, creación, acciones por `allowed_actions`, recepción por lote, discrepancias), inventario (existencias resaltadas, alertas, tránsito, ajustes), kardex y usuarios.
+  - 56 pruebas Vitest + Testing Library con `fetch` simulado (`src/test/http.ts`), sin MSW para no agregar dependencias.
+- Qué decisión tomó y por qué:
+  - No se tocó `vite.config.ts` ni `config/cors.php`: el proxy `/api` → 8080 ya existía y CORS ya permite `http://localhost:5173` con los headers necesarios (verificado con una prueba de humo real).
+  - Catálogo derivado de `/stocks` y autorizaciones por número porque faltan endpoints (S-80, S-81); se reporta en vez de crearlos.
+  - Idempotency-Key ligada al contenido del formulario (S-83) y guardia síncrona contra doble clic además de `isPending`: TanStack Query notifica `isPending` en el siguiente render.
+  - Se renombró `dispenseForm.ts` a `dispenseLines.ts`: en Windows chocaba con `DispenseForm.tsx` (solo difieren en mayúsculas).
+- Puntos que Daniel debe revisar/entender:
+  - `useCreateDispensation` + `createIdempotencyTracker`: cuándo se reutiliza y cuándo se renueva la clave.
+  - Por qué `allowed_actions` decide los botones de traslados y `permissions.ts` solo oculta secciones (la autorización real es del backend).
+  - `RequireAuth` y los manejadores de sesión registrados en el cliente (`setSessionHandlers`).
+  - La prueba de doble clic se validó quitando la protección: falla si se elimina.
+- Riesgos o cosas que podrían estar mal:
+  - Sin catálogo real, un producto sin existencias no se puede elegir en traslados; el médico no tiene pantalla para crear prescripciones.
+  - La vista previa FEFO puede quedar desactualizada entre la consulta y la confirmación (el backend reasigna).
+  - No se probó en navegador real con clics (solo pruebas jsdom y humo HTTP a través del proxy de Vite).
