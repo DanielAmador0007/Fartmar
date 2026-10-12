@@ -1,6 +1,8 @@
 <?php
 
+use App\Domain\Exceptions\BusinessRuleException;
 use App\Http\ApiErrorRenderer;
+use App\Http\Middleware\AssignCorrelationId;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -19,12 +21,24 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Primero en el grupo api: así el correlation id existe antes de
+        // autenticar y vuelve en la respuesta aunque sea un 401/403/429.
+        $middleware->api(prepend: [AssignCorrelationId::class]);
+
+        // API solo con token: sin sesión no hay a dónde redirigir. Sin esto, una
+        // petición sin "Accept: application/json" buscaba la ruta "login"
+        // (inexistente) y respondía 500 en vez de 401.
+        $middleware->redirectGuestsTo(fn () => null);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
+
+        // Un error de negocio (stock insuficiente, credenciales inválidas...) es
+        // una respuesta esperada, no una falla: no se escribe en el log. Las
+        // operaciones sensibles ya quedan en audit_logs.
+        $exceptions->dontReport(BusinessRuleException::class);
 
         // Formato uniforme { error: { code, message, details } } para errores
         // de negocio (409/422/403), validación, autenticación y 404.

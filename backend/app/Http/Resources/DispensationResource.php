@@ -2,9 +2,12 @@
 
 namespace App\Http\Resources;
 
+use App\Domain\Dispensing\DispensationActions;
 use App\Models\Dispensation;
 use App\Models\DispensationItem;
 use App\Models\DispensationItemLot;
+use App\Models\Patient;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -71,8 +74,25 @@ class DispensationResource extends JsonResource
             'authorized_at' => $this->authorized_at?->toIso8601String(),
             'rejected_by' => $this->rejected_by ? new UserSummaryResource($this->whenLoaded('rejecter')) : null,
             'rejected_at' => $this->rejected_at?->toIso8601String(),
-            'rejection_reason' => $this->rejection_reason,
+            // Texto libre del regente (puede mencionar al paciente): oculto para
+            // quien ve los datos de pacientes enmascarados (auditor).
+            'rejection_reason' => ($request->user()?->can('viewUnmasked', Patient::class) ?? false) ? $this->rejection_reason : null,
             'created_at' => $this->created_at->toIso8601String(),
+            // Acciones que el usuario actual puede ejecutar ya (Policy + estado):
+            // el frontend decide qué botones mostrar. El endpoint vuelve a validar.
+            'allowed_actions' => self::allowedActions($request, $this->resource),
         ];
+    }
+
+    /**
+     * Compartido con DispensationSummaryResource: misma regla en detalle y listado.
+     *
+     * @return list<string>
+     */
+    public static function allowedActions(Request $request, Dispensation $dispensation): array
+    {
+        $user = $request->user();
+
+        return $user instanceof User ? app(DispensationActions::class)->allowedFor($user, $dispensation) : [];
     }
 }

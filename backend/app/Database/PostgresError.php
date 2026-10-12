@@ -63,6 +63,28 @@ final class PostgresError
         return preg_match('/violates (?:check|unique) constraint "([^"]+)"/', $firstLine, $m) === 1 ? $m[1] : null;
     }
 
+    /**
+     * Nombre del trigger-guard de la Fase 3 que rechazó la escritura. Esos
+     * triggers lanzan check_violation con el mensaje "<guard>: <detalle>":
+     *   ERROR:  transfers_check_transition: transición de traslado no permitida de ...
+     * Solo se lee la primera línea del mensaje del servidor (igual que constraint()).
+     */
+    public static function triggerGuard(Throwable $e): ?string
+    {
+        if (! $e instanceof PDOException || self::sqlState($e) !== self::CHECK_VIOLATION) {
+            return null;
+        }
+
+        $serverMessage = $e->errorInfo[2] ?? null;
+        if (! is_string($serverMessage)) {
+            return null;
+        }
+
+        $firstLine = strtok($serverMessage, "\n");
+
+        return $firstLine !== false && preg_match('/^ERROR:\s+([a-z_]+):\s/', $firstLine, $m) === 1 ? $m[1] : null;
+    }
+
     public static function isViolationOf(Throwable $e, string $sqlState, string $constraint): bool
     {
         return self::sqlState($e) === $sqlState && self::constraint($e) === $constraint;

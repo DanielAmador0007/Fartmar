@@ -212,6 +212,58 @@ it('RN-05: un auxiliar no puede autorizar ni rechazar (403 por Policy)', functio
         ->assertForbidden();
 });
 
+it('RN-05: el regente que creó la dispensación tampoco puede rechazarla (403 SEGREGACION_FUNCIONES)', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
+    Sanctum::actingAs($s->regente);
+    $id = postDispensation($s->payload(2), (string) Str::uuid())->json('data.id');
+
+    $this->postJson("/api/v1/dispensations/{$id}/reject", ['reason' => 'No corresponde'])
+        ->assertForbidden()
+        ->assertJsonPath('error.code', 'SEGREGACION_FUNCIONES')
+        ->assertJsonPath('error.details.reason', 'MISMO_USUARIO');
+
+    expect(Dispensation::query()->findOrFail($id)->status->value)->toBe('PENDIENTE_AUTORIZACION');
+});
+
+it('RN-05: allowed_actions del detalle según usuario y estado', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
+    Sanctum::actingAs($s->regente);
+    $id = postDispensation($s->payload(2), (string) Str::uuid())
+        ->assertCreated()
+        ->assertJsonPath('data.allowed_actions', []) // el creador regente no decide lo suyo
+        ->json('data.id');
+
+    $actionsFor = function (User $user) use ($id) {
+        Sanctum::actingAs($user);
+
+        return $this->getJson("/api/v1/dispensations/{$id}")->assertOk()->json('data.allowed_actions');
+    };
+
+    expect($actionsFor($s->regente))->toBe([])
+        ->and($actionsFor($s->regente2))->toBe(['authorize', 'reject'])
+        ->and($actionsFor($s->auxiliar))->toBe([])
+        ->and($actionsFor(User::factory()->auditor()->create()))->toBe([]);
+
+    // Ya autorizada (COMPLETADA): sin acciones para nadie, y la respuesta de
+    // la autorización tampoco las ofrece.
+    Sanctum::actingAs($s->regente2);
+    $this->postJson("/api/v1/dispensations/{$id}/authorize")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'COMPLETADA')
+        ->assertJsonPath('data.allowed_actions', []);
+    expect($actionsFor($s->regente2))->toBe([]);
+});
+
+it('una dispensación normal COMPLETADA no ofrece acciones', function () {
+    $s = DispensingScenario::make([[30, 10]], prescribed: 5);
+    Sanctum::actingAs($s->auxiliar);
+
+    postDispensation($s->payload(2), (string) Str::uuid())
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'COMPLETADA')
+        ->assertJsonPath('data.allowed_actions', []);
+});
+
 it('RN-05: un regente inactivo no puede autorizar', function () {
     $s = DispensingScenario::make([[30, 10]], prescribed: 5, controlled: true);
     Sanctum::actingAs($s->auxiliar);

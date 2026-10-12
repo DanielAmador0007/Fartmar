@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-11, al cerrar la Fase 3.
+> Última actualización: 2026-10-11, al cerrar la Fase 5.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -24,10 +24,10 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 0 Andamiaje | ✅ Hecha | Laravel 13.35 / PHP 8.4, Vite 8 + React 19, compose `fartmar`, CI, `/health` `/ready` |
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
 | 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR #1, mergeado) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
-| 3 Traslados, ajustes, alertas | ✅ Hecha (PR `feat/fase-3-traslados`) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
-| 4 Seguridad y privacidad | ⏭️ **Siguiente** | seguridad-privacidad; ver "Pendientes de seguridad" abajo |
-| 5 Frontend | Pendiente | |
-| 6 Asistente IA | Pendiente | |
+| 3 Traslados, ajustes, alertas | ✅ Hecha (PR #2, mergeado) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
+| 4 Seguridad y privacidad | ✅ Hecha (PR `feat/fase-4-seguridad`) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
+| 5 Frontend | ✅ Hecha (PR `feat/fase-5-frontend`, apilada sobre la Fase 4) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
+| 6 Asistente IA | ⏭️ **Siguiente** | ia-asistente; ver "Lo que las fases siguientes deben saber de la Fase 5" |
 | 7 DevOps completo | Pendiente | |
 | 8 Documentación y cierre | Pendiente | |
 
@@ -48,6 +48,45 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+
+## Lo que las fases siguientes deben saber de la Fase 5
+
+- Frontend en `frontend/src`: `api/` (cliente único, `errors.ts` mapea códigos a español y muestra el correlation id),
+  `auth/` (sesión, `permissions.ts` solo para menú/rutas), `features/<módulo>/`. `api/types.ts` se mantiene a mano
+  contra `docs/openapi.yaml` (0.5.1).
+- Token en `sessionStorage` (S-82); datos de paciente solo en memoria. Idempotency-Key por intento (S-83), con
+  respaldo si no hay `crypto.randomUUID`.
+- **Asistente IA (Fase 6):** falta la pantalla del asistente en el frontend; agregarla en `features/assistant/` y en
+  el menú (`auth/permissions.ts`).
+- **DevOps (Fase 7):** el frontend corre en el host con el proxy de Vite (`/api` → 8080). Para la imagen de
+  producción: build estático servido por Nginx con el proxy `/api`; `crypto.randomUUID` requiere HTTPS o localhost
+  (hay respaldo, pero conviene servir por HTTPS).
+- Bajos abiertos de la revisión: catálogo cortado en 1000 filas (L3), ajustes solo sobre la página visible (L4),
+  discrepancias sin paginación (L6). Los commits iniciales de la Fase 5 (`aa28ea7`…`e698d5c`) no compilan por sí solos
+  (importan `auth/` antes de crearlo); los posteriores sí.
+- Cambio de comportamiento: el creador que intenta autorizar/rechazar recibe 403 `SEGREGACION_FUNCIONES` (Policy)
+  antes que 409.
+
+## Lo que las fases siguientes deben saber de la Fase 4
+
+- **Frontend (Fase 5):**
+  - Login y `GET /auth/me` devuelven `must_change_password`. Si es true, toda la API responde 403
+    `CAMBIO_CLAVE_REQUERIDO` salvo `auth/password`, `auth/me` y `auth/logout`: hay que mostrar la pantalla de cambio
+    de clave (`POST /auth/password`: actual + nueva confirmada, 12 caracteres a 72 bytes). Los usuarios demo tienen
+    la marca en false.
+  - Búsqueda de pacientes por **POST** `/patients/search` (`document_type`, `document_number`; S-69), con límite
+    de 30 por minuto. Después `GET /patients/{id}/prescriptions` (por línea: prescrito, entregado, reservado,
+    disponible) para armar la dispensación.
+  - Para el auditor, `PatientResource.masked=true`, y `instructions`/`rejection_reason` salen `null`: la UI debe
+    tolerar esos nulos.
+  - Cada respuesta trae `X-Correlation-Id`; mostrarlo en los mensajes de error ayuda a soportar incidentes.
+  - Endpoints de admin: `GET/POST /users`, `PATCH /users/{id}` (rol, is_active, nombre, password temporal).
+- **Asistente IA (Fase 6):** las herramientas no deben devolver datos de pacientes; reutilizar el procesador
+  `app/Logging/RedactSensitiveData` y no loguear prompts con PII.
+- **DevOps (Fase 7):** el canal de log predeterminado es `json` (stderr). El canal `emergency` no admite tap de
+  redacción (S-73). Falta configurar `TrustProxies` detrás de Nginx (IP real en bitácoras y limitadores), el formato
+  JSON del access log de Nginx y los headers de seguridad.
+- `docs/openapi.yaml` está en 0.4.0 con todos los endpoints de `route:list`.
 
 ## Lo que las fases siguientes deben saber de la Fase 3
 
@@ -109,30 +148,27 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - Cambiar `APP_KEY` o `PATIENT_HASH_KEY` invalida documentos cifrados/hashes (sin rutina de re-cifrado).
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
 
-### Pendientes de seguridad detectados en la revisión de la Fase 2 (para Fase 4 / 7)
+### Pendientes de seguridad abiertos (revisiones de las Fases 2 y 4)
 
-- **[Alto · Fase 4] PII y secretos en logs de excepciones:** `QueryException` incluye el SQL **con los valores**
-  (se vio en pruebas: un INSERT de `users` con correo y hash de contraseña). Laravel lo registra al reportar un 500.
-  Falta el procesador Monolog que redacte claves sensibles y los valores de SQL, y logs JSON a stdout
-  (hoy `LOG_CHANNEL=stderr` en texto plano).
+Resueltos en la Fase 4: PII en logs de excepciones, correlation id, login fallido auditado, pacientes con
+enmascarado y bitácora, revocación de tokens, enumeración de correos por tiempo y primer login lento.
+
 - **[Alto · Fase 7] `APP_DEBUG=true` por defecto** en `docker-compose.yml` y `.env.example` (correcto para demo
   local). La imagen/compose de producción debe forzar `APP_ENV=production` y `APP_DEBUG=false`; con debug activo
   cualquier 500 no capturado expone SQL y host. El renderizador ya responde `ERROR_INTERNO` si debug está apagado (S-44).
-- **[Medio · Fase 4] Middleware `X-Correlation-Id`:** `correlation_id` de dispensaciones, kardex y `audit_logs`
-  sigue en `null`; `audit_logs.ip` también (nadie llena `Context::get('ip')`).
-- **[Medio · Fase 4] Intentos de login fallidos no se auditan** (solo los exitosos y el logout). Agregar
-  `auth.login_failed` en `audit_logs` sin el correo en claro (p. ej. HMAC del correo) para detectar fuerza bruta.
-- **[Medio · Fase 4] `patient_access_logs`, endpoint de pacientes y enmascarado para auditor (`PatientMasker`):**
-  aún no existen. Hoy ningún Resource expone datos del paciente (solo `patient_id`), verificado en pruebas.
-- **[Medio · Fase 4] Al desactivar un usuario (CRUD de admin), revocar sus tokens** además de la verificación de
-  `is_active` en cada petición (S-41). Prueba de matriz `AuthorizationMatrixTest` debe ampliarse con cada endpoint nuevo.
+- **[Medio] Riesgo residual del admin (S-77):** puede crear un médico o un regente, entrar una vez con la clave
+  temporal y cambiarla. Queda auditado (`user.created` con el rol, `user.password_changed`), pero no se impide.
+- **[Bajo] Redacción de strings sin clave sensible** (`RedactSensitiveData`): solo enmascara correos dentro de textos
+  libres; un documento bajo una clave como `input` o `value` pasaría tal cual.
+- **[Bajo] Dos admins pueden desactivarse entre sí a la vez** y dejar el sistema sin administradores activos.
+- **[Bajo] Decisión de auditar la búsqueda sin resultado en `PatientController`**: debería vivir en un servicio de dominio.
+- **[Bajo] Sin retención de `audit_logs`**; cada login fallido agrega una fila. Prescripciones sin edición/anulación
+  por API y lista por paciente limitada a 50.
 - **[Bajo] Enumeración de ids por rol sin permiso:** un médico recibe 404 por una dispensación inexistente y 403 por
   una existente (el binding resuelve antes de la Policy). Solo revela que el id existe, sin datos.
 - **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
 - **[Bajo · Fase 7] Headers de seguridad** (CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`) en Nginx; hoy la
   API corre con el servidor embebido de PHP.
-- **[Bajo] Primer login de cada worker** tarda más (se genera el hash ficticio para igualar tiempos); diferencia
-  medible solo en la primera petición del proceso.
 - Restos de Docker de la Fase 0 que Daniel puede borrar a mano si quiere:
   `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`.
 

@@ -97,6 +97,10 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            // RN-10: el mensaje de QueryException deja los "?" en vez de los
+            // valores (correos, hashes, documentos). El procesador de logs
+            // RedactSensitiveData además quita el SQL y la línea DETAIL.
+            'mask_bindings_in_exception_messages' => true,
         ],
 
         'sqlsrv' => [

@@ -33,6 +33,8 @@ class UserSeeder extends Seeder
                     'name' => $user['name'],
                     'role' => $user['role'],
                     'is_active' => true,
+                    // Demo: entran directo con "password" (S-77 no aplica a la semilla).
+                    'must_change_password' => false,
                     'password' => self::PASSWORD,
                     'email_verified_at' => now(),
                 ],

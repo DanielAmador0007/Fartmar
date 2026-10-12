@@ -2,17 +2,22 @@
 
 namespace App\Http\Controllers;
 
+use App\Domain\Dispensing\DispensationQuery;
 use App\Domain\Dispensing\DispenseService;
+use App\Domain\Patients\PatientAccessLogger;
+use App\Http\Requests\IndexDispensationRequest;
 use App\Http\Requests\PreviewDispensationRequest;
 use App\Http\Requests\RejectDispensationRequest;
 use App\Http\Requests\StoreDispensationRequest;
 use App\Http\Resources\DispensationResource;
+use App\Http\Resources\DispensationSummaryResource;
 use App\Http\Resources\FefoPreviewResource;
 use App\Models\Dispensation;
 use App\Models\Product;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\Gate;
 
 /**
@@ -46,9 +51,20 @@ class DispensationController extends Controller
         return $response;
     }
 
-    public function show(Dispensation $dispensation): DispensationResource
+    /**
+     * Listado paginado con datos mínimos del paciente (solo ID): no escribe
+     * en la bitácora de accesos (S-87).
+     */
+    public function index(IndexDispensationRequest $request, DispensationQuery $query): AnonymousResourceCollection
+    {
+        return DispensationSummaryResource::collection($query->search($request->filters()));
+    }
+
+    public function show(Request $request, Dispensation $dispensation, PatientAccessLogger $accessLog): DispensationResource
     {
         Gate::authorize('view', $dispensation);
+        // RN-10: la dispensación dice a qué paciente se le entregó qué.
+        $accessLog->record($this->currentUser($request), $dispensation->patient()->firstOrFail(), PatientAccessLogger::DISPENSATION_VIEW);
 
         return new DispensationResource($dispensation->load(DispensationResource::RELATIONS));
     }
@@ -56,7 +72,7 @@ class DispensationController extends Controller
     /** RN-05: un regente distinto del creador autoriza un controlado. */
     public function authorizeControlled(Request $request, Dispensation $dispensation): DispensationResource
     {
-        Gate::authorize('decide', $dispensation);
+        Gate::authorize('authorize', $dispensation);
 
         $done = $this->service->authorize($dispensation, $this->currentUser($request));
 

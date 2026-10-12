@@ -3,16 +3,23 @@
 namespace App\Http\Requests;
 
 use App\Models\Dispensation;
+use Illuminate\Auth\Access\Response;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Gate;
 
 class RejectDispensationRequest extends FormRequest
 {
-    public function authorize(): bool
+    /**
+     * Devuelve la respuesta de la Policy (no un bool) para conservar el
+     * código SEGREGACION_FUNCIONES cuando el creador intenta rechazar.
+     */
+    public function authorize(): Response
     {
         $dispensation = $this->route('dispensation');
 
         return $dispensation instanceof Dispensation
-            && ($this->user()?->can('decide', $dispensation) ?? false);
+            ? Gate::inspect('reject', $dispensation)
+            : Response::deny();
     }
 
     /**

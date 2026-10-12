@@ -2,12 +2,17 @@
 
 use App\Http\Controllers\AlertController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CatalogController;
 use App\Http\Controllers\DispensationController;
 use App\Http\Controllers\InventoryAdjustmentController;
 use App\Http\Controllers\KardexController;
+use App\Http\Controllers\PatientController;
+use App\Http\Controllers\PrescriptionController;
 use App\Http\Controllers\StockController;
 use App\Http\Controllers\TransferController;
 use App\Http\Controllers\TransferDiscrepancyController;
+use App\Http\Controllers\UserController;
+use App\Http\Middleware\EnsurePasswordIsChanged;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -20,6 +25,8 @@ use Illuminate\Support\Facades\Route;
 Route::pattern('dispensation', '[1-9][0-9]{0,17}');
 Route::pattern('transfer', '[1-9][0-9]{0,17}');
 Route::pattern('discrepancy', '[1-9][0-9]{0,17}');
+Route::pattern('patient', '[1-9][0-9]{0,17}');
+Route::pattern('user', '[1-9][0-9]{0,17}');
 
 Route::prefix('v1')->group(function (): void {
     // Limitador "login" (AppServiceProvider): por correo + IP y por IP.
@@ -28,12 +35,19 @@ Route::prefix('v1')->group(function (): void {
         ->name('auth.login');
 
     // auth:sanctum primero para que el límite "api" cuente por usuario.
-    Route::middleware(['auth:sanctum', 'throttle:api'])->group(function (): void {
+    // EnsurePasswordIsChanged: con contraseña temporal solo auth/password,
+    // auth/me y auth/logout (S-77).
+    Route::middleware(['auth:sanctum', 'throttle:api', EnsurePasswordIsChanged::class])->group(function (): void {
         Route::post('auth/logout', [AuthController::class, 'logout'])->name('auth.logout');
         Route::get('auth/me', [AuthController::class, 'me'])->name('auth.me');
+        // Limitador "password": 5/min por usuario (adivinar la clave actual con un token robado).
+        Route::post('auth/password', [AuthController::class, 'changePassword'])
+            ->middleware('throttle:password')
+            ->name('auth.password');
 
         // Dispensación (RN-01..RN-06, RN-09). "preview" va antes de {dispensation}.
         Route::get('dispensations/preview', [DispensationController::class, 'preview'])->name('dispensations.preview');
+        Route::get('dispensations', [DispensationController::class, 'index'])->name('dispensations.index');
         Route::post('dispensations', [DispensationController::class, 'store'])->name('dispensations.store');
         Route::get('dispensations/{dispensation}', [DispensationController::class, 'show'])
             ->name('dispensations.show');
@@ -64,5 +78,24 @@ Route::prefix('v1')->group(function (): void {
         Route::post('inventory-adjustments', [InventoryAdjustmentController::class, 'store'])->name('inventory-adjustments.store');
         Route::get('kardex', [KardexController::class, 'index'])->name('kardex.index');
         Route::get('alerts', [AlertController::class, 'index'])->name('alerts.index');
+
+        // Pacientes (RN-10): enmascarado por rol y bitácora de cada lectura.
+        // Búsqueda por POST para que el documento no quede en URLs ni logs de acceso (S-69).
+        Route::post('patients/search', [PatientController::class, 'search'])
+            ->middleware('throttle:patient-search')
+            ->name('patients.search');
+        Route::get('patients/{patient}', [PatientController::class, 'show'])->name('patients.show');
+        Route::get('patients/{patient}/prescriptions', [PatientController::class, 'prescriptions'])
+            ->name('patients.prescriptions');
+        Route::post('prescriptions', [PrescriptionController::class, 'store'])->name('prescriptions.store');
+
+        // Catálogos de solo lectura (todos los roles activos).
+        Route::get('warehouses', [CatalogController::class, 'warehouses'])->name('warehouses.index');
+        Route::get('products', [CatalogController::class, 'products'])->name('products.index');
+
+        // Administración de usuarios (solo admin; sin DELETE, se desactiva).
+        Route::get('users', [UserController::class, 'index'])->name('users.index');
+        Route::post('users', [UserController::class, 'store'])->name('users.store');
+        Route::patch('users/{user}', [UserController::class, 'update'])->name('users.update');
     });
 });

@@ -299,3 +299,218 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Un `UPDATE` manual que incluya `status` con el mismo valor (p. ej. un script que reescribe la fila completa) ahora falla; hay que omitir `status` del `SET`.
   - `quantity_received` sigue aceptando reescribir el mismo valor (prueba M2 existente); la protección contra la doble recepción total recae en el trigger de transición, que corre al final de la transacción de recepción (deshace todo).
   - Las pruebas "control" dependen de pausas (300 ms) para forzar la carrera; en una máquina muy lenta podrían dar solo 409 y fallar por "no se reprodujo la carrera" (no por un bug). En 5 corridas seguidas no pasó.
+
+### 2026-10-11 — Fase 4: logs JSON sin datos personales y X-Correlation-Id
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `app/Logging/RedactSensitiveData.php` (procesador Monolog) y `app/Logging/UseRedaction.php` (tap que lo agrega a los canales `json`, `stderr`, `single`, `daily`, `monthly`).
+  - Canal `json` en `config/logging.php` (JsonFormatter a stderr) como predeterminado; `LOG_CHANNEL=json` en `docker-compose.yml`, `.env.example` y `backend/.env.example`; `mask_bindings_in_exception_messages` en la conexión pgsql.
+  - `app/Http/Middleware/AssignCorrelationId.php` registrado al inicio del grupo `api` en `bootstrap/app.php`.
+  - `tests/Support/LogCapture.php` (usa el canal json REAL, solo cambia stderr por un `TestHandler`) y `tests/Feature/Security/LoggingPrivacyTest.php`.
+- Qué decisión tomó y por qué:
+  - Las excepciones se convierten en un resumen propio en vez de dejar que Monolog serialice el objeto: el mensaje de `QueryException` trae el SQL con valores y la `PDOException` anidada trae la línea `DETAIL` de PostgreSQL ("Key (email)=(…)"). El resumen conserva el SQL con `?`, que es lo útil para depurar.
+  - Redacción por **clave** (en cualquier nivel) y por **contenido** (correos; en el mensaje, 6+ dígitos). Se usa `tap` y no `processors` porque funciona con cualquier driver; el procesador de Context de Laravel se agrega después y Monolog ejecuta primero el último agregado, así que la redacción corre al final.
+  - El correlation id del cliente se acepta solo con formato estricto (`\A[A-Za-z0-9-]{1,64}\z`); se usa `\z` y no `$` porque `$` acepta un salto de línea final.
+  - La IP del usuario va a `Context` (y por tanto a cada línea de log); se considera dato operativo de seguridad del personal, no del paciente (S-73).
+- Puntos que Daniel debe revisar/entender:
+  - Cómo llega `correlation_id` a las filas: el middleware lo pone en `Context`; `DispenseService`, `KardexService` y `AuditLogger` ya lo leían (antes quedaba `null`). Hay prueba que lo verifica en dispensación, kardex y `audit_logs`.
+  - Por qué el mensaje del log queda solo con la primera línea y sin "(Connection: …)".
+  - Para ver un ejemplo real, reportar una excepción desde `php artisan tinker` con `LOG_CHANNEL=json` (se probó con un INSERT duplicado en `users`: sale `users_email_unique` y el SQL con `?`, sin el correo).
+- Riesgos o cosas que podrían estar mal:
+  - Es una red de seguridad, no una garantía: un dato personal en una clave con nombre inocente (p. ej. `nota`) solo se limpia si es un correo. La regla sigue siendo no pasar datos personales al log.
+  - El servidor embebido de PHP imprime su propia línea de acceso (texto, no JSON) en stderr; con la búsqueda por POST no lleva el documento, pero en la Fase 7 (php-fpm + Nginx) hay que revisar el formato del access log de Nginx.
+  - Números de 6+ dígitos dentro del texto del mensaje (también un id grande) salen como `[NUM]`; en el contexto estructurado se conservan.
+
+### 2026-10-11 — Fase 4: pacientes con enmascarado por rol y bitácora de accesos (RN-10)
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `app/Domain/Patients/PatientMasker.php` (funciones puras), `PatientAccessLogger.php`, `PatientFinder.php`; `app/Policies/PatientPolicy.php` (`viewAny`, `view`, `viewUnmasked`); `PatientResource`, `PrescriptionResource`; `app/Domain/Prescriptions/PrescriptionQuery.php`; `PatientController`, `SearchPatientRequest`; `Prescription::isCurrent()`.
+  - Migración `2026_10_11_110000_add_masked_to_patient_access_logs.php`: columna `masked` y CHECK de acciones.
+  - Endpoints: `POST /patients/search`, `GET /patients/{id}`, `GET /patients/{id}/prescriptions`.
+  - Pruebas: `tests/Unit/PatientMaskerTest.php`, `tests/Feature/Api/PatientApiTest.php`; ajuste de `PrivacyConstraintsTest` (usaba la acción `VER`, ahora inválida por el CHECK).
+- Qué decisión tomó y por qué:
+  - **Búsqueda por POST y no por GET** (desvío respecto a lo pedido): con GET el documento queda en la URL, que se imprime en el log de acceso del servidor (el embebido de PHP lo hace hoy) y de Nginx, en el historial del navegador y en `Referer` (S-69).
+  - Admin no lee pacientes (S-68). El auditor recibe las mismas claves con valores enmascarados y `masked: true`, para que el frontend no cambie de forma.
+  - Quién ve sin máscara lo decide la Policy (`viewUnmasked`), que usan tanto el Resource como el logger: la columna `masked` dice exactamente lo que vio el usuario.
+  - El acceso se registra después de `Gate::authorize` y antes de responder: un 403 no deja fila (probado en la matriz para todos los endpoints).
+  - Búsqueda fallida → `audit_logs` `patient.search_not_found` sin el número (la bitácora de accesos exige `patient_id`).
+  - Reservado/disponible de cada línea con `withSum` sobre dispensaciones `PENDIENTE_AUTORIZACION`: la misma cuenta que `DispenseService`.
+- Puntos que Daniel debe revisar/entender:
+  - `PatientResource` enmascara por defecto si no hay usuario o no tiene permiso (valor seguro).
+  - La búsqueda es exacta por HMAC (`DocumentHasher`): no se pueden buscar "parecidos" sin descifrar todo, y eso es intencional.
+  - El documento sigue cifrado en la BD; hay prueba que lee la fila cruda tras usar la API.
+- Riesgos o cosas que podrían estar mal:
+  - Enumeración: el binding de ruta responde 404 a un id inexistente antes de la Policy, así que un admin distingue ids existentes (403) de inexistentes (404). No revela datos.
+  - Sin asignación médico ↔ paciente: cualquier médico ve a cualquier paciente (queda en la bitácora).
+  - La lista de prescripciones se limita a 50; no hay paginación.
+
+### 2026-10-11 — Fase 4: creación de prescripciones (médico)
+- Agente: seguridad-privacidad
+- Qué generó la IA: `PrescriptionPolicy`, `StorePrescriptionRequest`, `PrescriptionService`, `PrescriptionController`, ruta `POST /api/v1/prescriptions`, `tests/Feature/Api/PrescriptionApiTest.php` (incluye dispensar de inmediato contra la prescripción creada).
+- Qué decisión tomó y por qué: vigencia desde **mañana** (no "solo hoy") por el CHECK `valid_until >= issued_at::date` con `issued_at` en UTC (S-70); número `RX-` + ULID para no necesitar un consecutivo con bloqueo; auditoría con IDs y conteos, sin las indicaciones (texto libre).
+- Puntos que Daniel debe revisar/entender: la validación de fechas usa `BusinessDate::today()` (Bogotá) en las reglas `after`/`before_or_equal`.
+- Riesgos o cosas que podrían estar mal: no hay edición ni anulación de prescripciones por API; el catálogo no tiene `is_active`, así que no se distingue un producto descatalogado.
+
+### 2026-10-11 — Fase 4: login fallido auditado y administración de usuarios
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `LoginService::recordFailure()` y `LoginService::emailHash()`; `DocumentHasher::key()` pasó a público para reutilizar la clave HMAC.
+  - `UserPolicy`, `UserManagementService`, `SelfLockoutException`, `StoreUserRequest`, `UpdateUserRequest`, `UserController`, rutas `GET/POST /users` y `PATCH /users/{id}`; `UserResource` ahora incluye `is_active`.
+  - Pruebas: `tests/Feature/Security/LoginAuditTest.php`, `tests/Feature/Api/UserAdminApiTest.php`.
+- Qué decisión tomó y por qué:
+  - El correo del login fallido se guarda como HMAC con prefijo `login-email:` (S-71): agrupa intentos contra la misma cuenta (sin importar mayúsculas) y no es reversible sin la clave. El motivo (`USUARIO_DESCONOCIDO` / `CLAVE_INCORRECTA` / `USUARIO_INACTIVO`) es solo interno.
+  - Revocar tokens también al **cambiar el rol**, no solo al desactivar: la sesión se emitió con los permisos anteriores.
+  - Autobloqueo (desactivarse o quitarse admin) → 422 `OPERACION_NO_PERMITIDA` desde el servicio (es regla de negocio, no de rol).
+- Puntos que Daniel debe revisar/entender:
+  - `audit_logs.metadata` es `jsonb`: PostgreSQL reordena las claves, por eso las pruebas comparan con `toEqual` y no con `toBe`.
+  - El `PATCH` ignora `email` y `password` (no están en las reglas) en vez de rechazarlos.
+- Riesgos o cosas que podrían estar mal:
+  - Una fila de auditoría por intento fallido; con el límite de 5/min por correo + IP y 20/min por IP el volumen está acotado, pero un ataque distribuido puede llenar `audit_logs` (no hay retención definida).
+  - No hay restablecimiento de contraseña ni cambio de correo.
+  - Dos admins que se desactivan mutuamente al mismo tiempo podrían dejar el sistema sin admins activos (no se bloquea la fila); muy improbable, se recupera por seeder o BD.
+
+### 2026-10-11 — Fase 4: matriz de autorización ampliada y errores de triggers
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - `AuthorizationMatrixTest`: 7 endpoints nuevos × 5 roles; prueba "sin autenticar → 401" para los 28 endpoints; un 403 no deja filas en `patient_access_logs`; prueba que falla si alguna ruta `/api/v1` (salvo login/logout) queda fuera de la matriz.
+  - `PostgresError::triggerGuard()` y mapeo en `ApiErrorRenderer` de los triggers de traslados a 409 `TRANSICION_INVALIDA` / 403 `SEGREGACION_FUNCIONES` / 422 `LOTE_VENCIDO` (S-76), con pruebas en `DatabaseErrorMappingTest`.
+  - Revisión: `route:list` (todas con `auth:sanctum` salvo login, verificado por prueba), sin `dd(`/`dump(`, sin secretos en código, sin SQL crudo con interpolación de variables.
+- Qué decisión tomó y por qué: solo se mapean los triggers que significan "el traslado cambió por otro camino"; los que indican un bug (saldo de kardex, faltante incoherente) siguen como 500, igual que la decisión de la Fase 2 para CHECK desconocidos.
+- Puntos que Daniel debe revisar/entender: el prefijo `<guard>:` se lee de la primera línea del mensaje del servidor (`errorInfo[2]`), no del SQL, igual que `PostgresError::constraint()`.
+- Riesgos o cosas que podrían estar mal:
+  - Si se renombra un trigger o cambia el prefijo del mensaje, el mapeo vuelve a 500 sin avisar (hay prueba con el trigger de transición real).
+  - El asistente IA (Fase 6) aún no existe: queda pendiente verificar que ninguna herramienta devuelva datos de pacientes.
+
+### 2026-10-11 — Fase 4: hallazgos de la prueba manual en el contenedor
+- Agente: seguridad-privacidad
+- Qué generó la IA: `redirectGuestsTo(fn () => null)` y `dontReport(BusinessRuleException::class)` en `bootstrap/app.php`, con dos pruebas en `LoggingPrivacyTest`.
+- Qué decisión tomó y por qué:
+  - Al recrear el contenedor con logs JSON, `curl /api/v1/auth/me` (sin token y sin `Accept: application/json`) respondió **500**: el middleware `Authenticate` intentaba redirigir a la ruta `login`, que no existe en una API solo con token. Venía de antes (las pruebas siempre usan `getJson`). Ahora es 401 `NO_AUTENTICADO`.
+  - Cada error de negocio esperado (credenciales inválidas, stock insuficiente…) se escribía en el log como `error` con traza. Son respuestas normales, no fallas; lo sensible ya queda en `audit_logs`.
+- Puntos que Daniel debe revisar/entender: los 500 reales (bugs, BD caída) siguen registrándose; solo se excluyen las subclases de `BusinessRuleException`.
+- Riesgos o cosas que podrían estar mal: si alguien quiere métricas de errores de negocio desde los logs, ya no estarán ahí (habría que sacarlas de `audit_logs` o agregar un contador).
+
+### 2026-10-11 — Fase 4: corrección de los hallazgos del revisor-senior
+- Agente: seguridad-privacidad
+- Qué generó la IA:
+  - **A1** `LoginService::dummyHash()`: constante bcrypt de costo 12 (de un valor aleatorio descartado) y, con otro costo, `Cache::rememberForever` con el costo en la clave. Pruebas en `AuthHardeningTest` con un proxy de Mockery sobre el `HashManager` real (`shouldNotReceive('make')` con costo 12; `make` una sola vez en 3 logins con costo 5).
+  - **A2** migración `2026_10_11_120000_add_must_change_password_to_users`, `EnsurePasswordIsChanged`, `PasswordChangeRequiredException` (403 `CAMBIO_CLAVE_REQUERIDO`), `ChangePasswordRequest`, `POST /auth/password` (`AuthController::changePassword` → `UserManagementService::changeOwnPassword`), restablecer por `PATCH /users/{id}` con `password`, limitador `password` (5/min), `must_change_password` en `UserResource`, seeders y factory en `false`. Pruebas en `tests/Feature/Security/PasswordChangeTest.php`, `UserAdminApiTest` y la matriz.
+  - **B3** `App\Http\Requests\PasswordRules` (12+, letras y números, ≤ 72 bytes con `strlen`) usado en crear, restablecer y cambiar.
+  - **M1** tap `UseRedaction` en slack, papertrail, syslog y errorlog; prueba que recorre `config('logging.channels')`.
+  - **M2** `instructions` y `rejection_reason` en `null` para quien no tiene `viewUnmasked`.
+  - **M3** migración `2026_10_11_120100_add_dispensation_view_access_action` y registro `patient.dispensation_view` en `DispensationController::show`; pruebas de 403/404 sin registro (y **B6** para `GET /patients/{id}` inexistente).
+  - **B7** limitador `patient-search` (30/min por usuario). **B4** `users_email_unique` → 422 `VALIDACION`. **B1** correlation id siempre del servidor; el del cliente va como `client_correlation_id` y `X-Client-Correlation-Id`.
+  - **M4** `docs/openapi.yaml` 0.4.0; validado con PyYAML en el host (no hay `symfony/yaml` en `vendor` y no se agregó una dependencia solo para esto): parsea, los 36 `$ref` resuelven y las 29 rutas de `route:list` están documentadas.
+- Qué decisión tomó y por qué:
+  - A2 en lo mínimo defendible: la clave temporal no evita que el admin entre UNA vez como el usuario creado y la cambie, pero sí que la use indefinidamente sin dejar `user.password_changed`. El riesgo residual queda en S-77.
+  - Restablecer va por el mismo `PATCH /users/{id}` (campo `password`) en vez de un endpoint nuevo, con acción de auditoría propia `user.password_reset`.
+  - `emergency` queda sin tap: Laravel lo construye sin taps y solo lo usa si un canal no se puede crear (documentado en S-73).
+  - Al mapear `users_email_unique` a 422 (B4), la prueba "un 500 por QueryException no deja PII" dejó de producir un 500; se cambió a un paciente duplicado, que además trae nombres, teléfono y documento en el INSERT (prueba más fuerte). La corrección va en el commit de B1 porque el commit de B4 la dejó roja (se detectó al correr las pruebas afectadas).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué el hash de relleno debe tener el **mismo costo** que las contraseñas reales y por qué la estática anterior no servía con el servidor embebido de PHP (cada petición es un proceso nuevo).
+  - `EnsurePasswordIsChanged` va en el grupo autenticado después de `auth:sanctum`; las rutas permitidas se identifican por nombre (`auth.password`, `auth.me`, `auth.logout`).
+  - Los textos libres ocultos usan la misma Policy (`viewUnmasked`) que el enmascarado del paciente.
+- Riesgos o cosas que podrían estar mal:
+  - El admin sigue siendo de confianza (S-77).
+  - La medición por HTTP en el servidor embebido tiene picos en la primera petición de cada worker (arranque del proceso), sin relación con el hash; en régimen estable correo existente e inexistente rondan 0,33 s.
+  - El commit `7cda64c` (B4) deja una prueba en rojo hasta `768fd99` (B1); si se hace `git bisect`, tenerlo en cuenta.
+
+### 2026-10-11 — Fase 5: frontend React
+- Agente: frontend-react
+- Qué generó la IA:
+  - `src/api/`: cliente `fetch` único (`client.ts`) con Bearer, `ApiError` normalizado (errores de la API, respuestas no JSON y fallos de red), `X-Correlation-Id` y manejo de 401 (logout) y 403 `CAMBIO_CLAVE_REQUERIDO`; mapa código → mensaje en español (`errors.ts`); tipos de la API v0.4.0; token en `sessionStorage`.
+  - `src/auth/`: `AuthProvider` (login, `/auth/me`, logout que vacía la caché), cambio de clave obligatorio, `permissions.ts` (qué muestra cada rol) y rutas protegidas.
+  - `src/features/`: dispensación (búsqueda por documento, prescripciones vigentes, vista previa FEFO con `GET /dispensations/preview`, confirmación idempotente, pantalla de autorizaciones), pacientes, traslados (lista, creación, acciones por `allowed_actions`, recepción por lote, discrepancias), inventario (existencias resaltadas, alertas, tránsito, ajustes), kardex y usuarios.
+  - 56 pruebas Vitest + Testing Library con `fetch` simulado (`src/test/http.ts`), sin MSW para no agregar dependencias.
+- Qué decisión tomó y por qué:
+  - No se tocó `vite.config.ts` ni `config/cors.php`: el proxy `/api` → 8080 ya existía y CORS ya permite `http://localhost:5173` con los headers necesarios (verificado con una prueba de humo real).
+  - Catálogo derivado de `/stocks` y autorizaciones por número porque faltan endpoints (S-80, S-81); se reporta en vez de crearlos.
+  - Idempotency-Key ligada al contenido del formulario (S-83) y guardia síncrona contra doble clic además de `isPending`: TanStack Query notifica `isPending` en el siguiente render.
+  - Se renombró `dispenseForm.ts` a `dispenseLines.ts`: en Windows chocaba con `DispenseForm.tsx` (solo difieren en mayúsculas).
+- Puntos que Daniel debe revisar/entender:
+  - `useCreateDispensation` + `createIdempotencyTracker`: cuándo se reutiliza y cuándo se renueva la clave.
+  - Por qué `allowed_actions` decide los botones de traslados y `permissions.ts` solo oculta secciones (la autorización real es del backend).
+  - `RequireAuth` y los manejadores de sesión registrados en el cliente (`setSessionHandlers`).
+  - La prueba de doble clic se validó quitando la protección: falla si se elimina.
+- Riesgos o cosas que podrían estar mal:
+  - Sin catálogo real, un producto sin existencias no se puede elegir en traslados; el médico no tiene pantalla para crear prescripciones.
+  - La vista previa FEFO puede quedar desactualizada entre la consulta y la confirmación (el backend reasigna).
+  - No se probó en navegador real con clics (solo pruebas jsdom y humo HTTP a través del proxy de Vite).
+
+### 2026-10-11 — Fase 5: endpoints de catálogo y listado de dispensaciones
+- Agente: backend-dominio
+- Qué generó la IA:
+  - `GET /api/v1/warehouses` y `GET /api/v1/products` (`CatalogController` → `IndexWarehouseRequest`/`IndexProductRequest` → `WarehousePolicy`/`ProductPolicy` → `Domain/Catalog/CatalogQuery` → `WarehouseSummaryResource`/`ProductResource`).
+  - `GET /api/v1/dispensations` (`DispensationController::index` → `IndexDispensationRequest` → `DispensationPolicy::viewAny` → `Domain/Dispensing/DispensationQuery` → `DispensationSummaryResource`).
+  - Pruebas: `tests/Feature/Api/CatalogApiTest.php`, `tests/Feature/Api/DispensationIndexApiTest.php` y tres filas nuevas en `AuthorizationMatrixTest` (5 roles + sin autenticar). `docs/openapi.yaml` 0.5.0. Supuestos S-86 a S-88.
+- Qué decisión tomó y por qué:
+  - Son consultas de solo lectura: no hay transacción ni bloqueos; el flujo es "valida filtros → autoriza → consulta paginada con eager loading → recurso". No mueven stock ni escriben kardex.
+  - El listado de dispensaciones usa un recurso **resumido** propio (no `DispensationResource`): solo `patient_id`, sin lotes ni motivo de rechazo. Así no expone datos personales y no necesita una fila de bitácora por paciente; el detalle sigue registrando el acceso (S-87).
+  - Catálogos para todos los roles: no tienen datos personales y el médico necesita productos para prescribir (S-86). Bodegas sin filtro de "activas" porque el modelo no tiene esa columna.
+  - La búsqueda de productos escapa `%`, `_` y `\` antes del `ILIKE` para que el texto del usuario se busque literal.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué el listado no registra en `patient_access_logs` y el detalle sí (qué datos expone cada uno).
+  - Que `DispensationPolicy::viewAny` tiene los mismos roles que `view` y que la matriz de autorización falla si una ruta nueva no se agrega.
+  - El orden por `created_at DESC, id DESC` desempata filas creadas en el mismo instante.
+- Riesgos o cosas que podrían estar mal:
+  - El `patient_id` del listado es un identificador interno; quien también puede leer pacientes puede cruzarlo (ese cruce sí queda en bitácora).
+  - `ILIKE '%texto%'` no usa índice: con un catálogo muy grande convendría un índice trigram (`pg_trgm`). Para el tamaño de una IPS no es necesario.
+  - El frontend todavía usa S-80/S-81; hay que migrar las pantallas (S-88).
+
+### 2026-10-11 — Fase 5: frontend con catálogos, prescripción del médico y bandeja de autorizaciones
+- Agente: frontend-react
+- Qué generó la IA:
+  - `features/catalog/useCatalog.ts` ahora usa `GET /warehouses` y `GET /products` (S-86) en vez de derivar de `/stocks`; `useProductSearch(q)` para prescribir.
+  - Pantalla del médico dentro de Pacientes: `PrescriptionForm.tsx` + `prescriptionLines.ts` (cuerpo de `POST /prescriptions`, fecha entre mañana y hoy + 365, cantidades 1–10000, indicaciones ≤ 255 en `null` si vacías), búsqueda con `useDebouncedValue` (300 ms), anti doble clic y recarga de la lista de prescripciones. Permiso `createPrescription` (solo médico).
+  - `/autorizaciones` como bandeja: `GET /dispensations?status=PENDIENTE_AUTORIZACION` con filtro por bodega, `DecisionControls.tsx` (autorizar / rechazar con motivo) en cada fila y en el detalle `?id=`; se eliminó la búsqueda por número.
+  - Pruebas nuevas: catálogo desde los nuevos endpoints, prescripción (envío, validación, doble clic, error 422, auditor sin formulario) y bandeja (lista, filtro, autorizar con doble clic, creador deshabilitado, rechazo con motivo, SEGREGACION_FUNCIONES). 69 pruebas en total.
+  - S-80 y S-81 marcados como superados (S-86, S-87/S-88).
+- Qué decisión tomó y por qué:
+  - La prescripción vive en la pantalla Pacientes (el médico ya la tenía en el menú) en vez de una sección nueva: buscar paciente → ver prescripciones → prescribir es un solo flujo.
+  - Los botones de decisión se deshabilitan (no se ocultan) para el creador, con el motivo visible; el backend responde igual `SEGREGACION_FUNCIONES` si se fuerza.
+  - El detalle sigue usando `GET /dispensations/{id}` (deja bitácora, S-75); la bandeja solo usa el resumen sin datos del paciente (S-87).
+- Puntos que Daniel debe revisar/entender:
+  - `useAfterDecision` en `dispensingApi.ts`: qué cachés se actualizan tras autorizar/rechazar.
+  - `validUntilRange` calcula mañana/hoy + 365 con la fecha de Bogotá del navegador; la API vuelve a validar con su reloj.
+- Riesgos o cosas que podrían estar mal:
+  - La búsqueda de productos pide como máximo 20 resultados; con un catálogo grande hay que afinar `q`.
+  - La prueba de humo de la bandeja devolvió lista vacía (no hay pendientes en la BD de demo); el flujo con datos se cubrió solo con pruebas simuladas.
+
+### 2026-10-11 — Fase 5: revisión senior (M2, L7, L8) — `allowed_actions` en dispensaciones
+- Agente: backend-dominio
+- Qué generó la IA:
+  - `DispensationPolicy`: `decide` se separó en `authorize` y `reject`. Ambas exigen regente activo **y distinto del creador**; si es el creador niegan con `BusinessDenial` (`SEGREGACION_FUNCIONES`, `reason: MISMO_USUARIO`), igual que `TransferPolicy::approve`. `RejectDispensationRequest::authorize()` devuelve la respuesta de la Policy (no un bool) para conservar ese código.
+  - `App\Domain\Dispensing\DispensationActions` (gemelo de `TransferActions`): si la dispensación está `PENDIENTE_AUTORIZACION`, devuelve las acciones que la Policy permite; si no, `[]`.
+  - `allowed_actions` en `DispensationResource` y `DispensationSummaryResource` (ambos usan `DispensationResource::allowedActions()`).
+  - Se quitó `patient_id` de `DispensationSummaryResource` (S-87 actualizado). El detalle lo conserva.
+  - Migración con índice `(warehouse_id, status, created_at)` en `dispensations`: existía `(status, created_at)` pero ninguno empezaba por `warehouse_id`.
+  - Pruebas: acciones por usuario y estado en listado y detalle (creador regente: nada; otro regente: `authorize`, `reject`; auxiliar y auditor: nada; COMPLETADA/RECHAZADA: nada), rechazo del creador → 403 `SEGREGACION_FUNCIONES`, y conteo de consultas del listado (6 vs 18 filas: misma cantidad, ≤ 9).
+  - OpenAPI 0.5.1.
+- Qué decisión tomó y por qué:
+  - El **estado** no va en la Policy (igual que en traslados): la Policy responde "¿esta persona puede decidir esta dispensación?" y el servicio responde "¿se puede decidir ahora?" (`TRANSICION_INVALIDA`). `DispensationActions` combina las dos para el frontend.
+  - Efecto colateral aceptado: el creador que intenta autorizar una dispensación ya cerrada ahora recibe 403 `SEGREGACION_FUNCIONES` (antes 409 `TRANSICION_INVALIDA`), porque la Policy se evalúa antes que el servicio.
+  - Flujo en lenguaje simple: al listar o ver una dispensación, el servidor mira dos cosas sin ir a la BD: si está esperando autorización y si quien pregunta es un regente activo que no la creó. Si ambas se cumplen, le dice al frontend "puedes autorizar o rechazar". Cuando el regente pulsa el botón, el endpoint vuelve a preguntar a la Policy y el servicio bloquea la fila y valida todo otra vez (y la BD también).
+- Puntos que Daniel debe revisar/entender:
+  - Por qué la prueba de N+1 compara 6 vs 18 filas y no 3 vs 12: si ninguna fila tiene `authorized_by`, Eloquent no lanza la consulta de `authorizer` y la cuenta cambia por eso, no por N+1.
+  - `allowed_actions` es una pista de interfaz; la autorización real sigue en el endpoint, el servicio y el CHECK de la BD.
+- Riesgos o cosas que podrían estar mal:
+  - El frontend (`api/types.ts`, `DecisionControls`) aún no usa `allowed_actions` y `DispensationSummary` sigue declarando `patient_id`; hay que ajustar el tipo y pasar a decidir los botones con `allowed_actions`.
+
+### 2026-10-11 — Fase 5: corrección de los hallazgos del revisor-senior (frontend)
+- Agente: frontend-react
+- Qué generó la IA:
+  - **A1** `errors.ts`: `PRESCRIPCION_NO_VIGENTE` con mensaje por `details.reason` (VENCIDA con fecha, COMPLETADA, ANULADA, PACIENTE_NO_CORRESPONDE, LINEA_NO_CORRESPONDE); `TRASLADO_INVALIDO`, `AJUSTE_INVALIDO` y códigos sin texto propio usan el mensaje del servidor (corto, de una línea); `ERROR_INTERNO` sigue genérico.
+  - **M1** la dispensación no preselecciona bodega. **M2** `DecisionControls` habilita con `allowed_actions`; `DispensationSummary` sin `patient_id`. **M3** `newUuid()` con respaldo `crypto.getRandomValues` (UUID v4) si no hay `randomUUID`. **M4** `TransferActions` con key solo por id y error visible aunque no queden acciones. **M6** umbral de alerta desde `alerts.expiry_days` (nivel `withinAlert`). **L1** `/auth/me` sin red no cierra sesión: pantalla con Reintentar. **L2** usuarios: fila con su propia mutación, rol con Guardar/Descartar, reset limpiado solo al éxito. **L10** S-88 corregido. **L11** cabecera de `types.ts`.
+  - **M5** pruebas de kardex, creación de traslado, discrepancias y reintentos de dispensación (SIN_CONEXION reutiliza la clave; IDEMPOTENCIA_CONFLICTO la renueva). 104 pruebas en total.
+- Qué decisión tomó y por qué:
+  - Las pruebas de doble clic de M5 destaparon dos casos reales: tras resolver una discrepancia o decidir una dispensación, el formulario seguía activo hasta recargar la lista y un segundo clic rápido reenviaba (la API respondería 409). Ahora el control se retira al tener éxito.
+  - No se muestra `error.message` en `ERROR_INTERNO` aunque venga: con `APP_DEBUG` un 500 podría traer detalle técnico.
+  - En M2 los botones se deshabilitan (no se ocultan) cuando la acción no está en `allowed_actions`, con texto que explica; el creador ve "La creaste tú".
+  - Cada commit compila por sí solo y lleva su prueba (verificado con `tsc -b` y la suite antes de cada commit).
+- Puntos que Daniel debe revisar/entender:
+  - `serverMessage()` en `errors.ts`: cuándo se confía en el texto del servidor.
+  - El flujo de estado `error` en `AuthProvider`/`RequireAuth` (solo 401 cierra sesión).
+  - Por qué la key de `TransferActions` no incluye el estado.
+- Riesgos o cosas que podrían estar mal:
+  - Si el backend cambia textos de error, la interfaz los mostrará tal cual en los códigos sin mapa propio.
+  - `CRITICAL_DAYS` (30) sigue fijo en el cliente; solo la ventana de alerta viene de la API.

@@ -22,7 +22,7 @@ return [
 
     'allowed_headers' => ['Accept', 'Authorization', 'Content-Type', 'Idempotency-Key', 'X-Correlation-Id', 'X-Requested-With'],
 
-    'exposed_headers' => ['Idempotent-Replayed', 'X-Correlation-Id', 'Retry-After'],
+    'exposed_headers' => ['Idempotent-Replayed', 'X-Correlation-Id', 'X-Client-Correlation-Id', 'Retry-After'],
 
     'max_age' => 600,
 

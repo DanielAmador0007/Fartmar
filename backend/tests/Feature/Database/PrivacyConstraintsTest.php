@@ -48,7 +48,7 @@ it('rechaza dos pacientes con el mismo documento', function () {
 it('RN-10: las bitácoras de acceso y auditoría son de solo inserción', function () {
     $user = User::factory()->create();
     $access = PatientAccessLog::query()->create([
-        'user_id' => $user->id, 'patient_id' => Patient::factory()->create()->id, 'action' => 'VER',
+        'user_id' => $user->id, 'patient_id' => Patient::factory()->create()->id, 'action' => 'patient.view',
     ]);
     $audit = AuditLog::query()->create([
         'user_id' => $user->id, 'action' => 'TRASLADO_APROBADO', 'metadata' => ['transfer_id' => 1],
@@ -107,10 +107,14 @@ it('RN-10: las bitácoras rechazan acciones vacías y también son inmutables v�
 
     expectDbRejects(fn () => DB::table('patient_access_logs')->insert([
         'user_id' => $user->id, 'patient_id' => $patient->id, 'action' => '  ',
-    ]), 'patient_access_logs_action_not_blank');
+    ]), 'patient_access_logs_action_');
+    // Fase 4: solo las lecturas que registra la API (CHECK de lista).
+    expectDbRejects(fn () => DB::table('patient_access_logs')->insert([
+        'user_id' => $user->id, 'patient_id' => $patient->id, 'action' => 'VER',
+    ]), 'patient_access_logs_action_check');
     expectDbRejects(fn () => DB::table('audit_logs')->insert(['user_id' => $user->id, 'action' => '']), 'audit_logs_action_not_blank');
 
-    $access = PatientAccessLog::query()->create(['user_id' => $user->id, 'patient_id' => $patient->id, 'action' => 'VER']);
+    $access = PatientAccessLog::query()->create(['user_id' => $user->id, 'patient_id' => $patient->id, 'action' => 'patient.view']);
     $audit = AuditLog::query()->create(['user_id' => $user->id, 'action' => 'X', 'metadata' => []]);
 
     expectDbRejects(fn () => $access->update(['action' => 'BORRADO']), 'solo inserción');
@@ -124,7 +128,7 @@ it('RN-10: las bitácoras rechazan acciones vacías y también son inmutables v�
 it('no se puede borrar un paciente con accesos registrados en la bitácora', function () {
     $patient = Patient::factory()->create();
     PatientAccessLog::query()->create([
-        'user_id' => User::factory()->create()->id, 'patient_id' => $patient->id, 'action' => 'VER',
+        'user_id' => User::factory()->create()->id, 'patient_id' => $patient->id, 'action' => 'patient.view',
     ]);
 
     expectDbRejects(fn () => DB::table('patients')->where('id', $patient->id)->delete(), 'patient_access_logs_patient_id_foreign');
