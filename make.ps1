@@ -44,7 +44,7 @@ Objetivos:
   test-frontend     Vitest
   lint              Pint, Larastan, ESLint y tsc
   fix               Aplica formato de Pint
-  eval              Evaluacion del asistente IA (proveedor mock)
+  eval              Evaluacion del asistente IA (mock) sobre la BD semilla (fresh = datos limpios)
   frontend-install  npm ci del frontend
   frontend-dev      Servidor Vite en http://localhost:5173
 '@ | Write-Host

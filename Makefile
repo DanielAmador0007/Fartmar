@@ -56,7 +56,7 @@ lint-frontend:
 fix: ## Aplica el formato de Pint
 	$(API) ./vendor/bin/pint
 
-eval: ## Evaluación del asistente IA con el proveedor mock
+eval: ## Evaluación del asistente IA (mock) sobre la BD semilla; `make fresh` para partir de datos limpios
 	$(API) php artisan assistant:eval --provider=mock
 
 frontend-install: ## npm ci del frontend
