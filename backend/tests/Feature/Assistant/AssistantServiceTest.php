@@ -76,6 +76,7 @@ it('mock elige la herramienta correcta según la pregunta', function (string $qu
     'en tránsito' => ['¿Qué traslados están en tránsito?', 'get_transfers', ['status' => 'EN_TRANSITO']],
     'bodegas' => ['¿Qué bodegas existen?', 'list_warehouses', []],
     'meses' => ['Lotes de omeprazol que vencen en 2 meses', 'get_expiring_lots', ['days' => 60]],
+    'infinitivo legítimo' => ['¿Qué traslados faltan por despachar?', 'get_transfers', []],
 ]);
 
 it('mock: los resultados reales llegan a la respuesta', function () {
