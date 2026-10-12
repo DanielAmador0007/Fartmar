@@ -409,3 +409,89 @@ li.low-stock,
   padding: 0.3rem 0.6rem;
   border-bottom: 1px solid #e5e7eb;
 }
+
+/* --- Asistente IA --- */
+textarea {
+  resize: vertical;
+}
+
+.assistant-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.assistant-examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+button.chip {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: #f0fdfa;
+  border-color: #99f6e4;
+  color: var(--primary-dark);
+}
+
+.exchange-question {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+
+/* Texto plano del asistente: respeta los saltos de línea sin interpretar HTML. */
+.assistant-answer {
+  white-space: pre-line;
+  margin: 0.4rem 0;
+}
+
+.exchange.outcome-refused {
+  border-left: 4px solid var(--danger);
+}
+
+.exchange.outcome-out_of_scope {
+  border-left: 4px solid #9ca3af;
+}
+
+.exchange .badge {
+  margin-left: 0;
+}
+
+.assistant-result {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.assistant-tools {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.assistant-tools summary {
+  cursor: pointer;
+}
+
+.assistant-tools ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.untrusted-note {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border: 1px dashed #f59e0b;
+  border-radius: 4px;
+  background: #fffbeb;
+  white-space: pre-line;
+}
+
+.untrusted-label {
+  font-weight: 600;
+  color: #92400e;
+}
