@@ -16,12 +16,19 @@ function baseRoutes(dispenseHandler: MockReply | (() => MockReply | Promise<Mock
   }
 }
 
+async function chooseWarehouse() {
+  const select = await screen.findByLabelText('Bodega')
+  await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(3))
+  await userEvent.selectOptions(select, '1')
+}
+
 // Recorre el flujo hasta dejar lista la confirmación.
 async function goToConfirm() {
   const search = await screen.findByLabelText('Documento del paciente')
   expect(search).toHaveFocus()
   await userEvent.type(search, '9900000001{Enter}')
   await userEvent.click(await screen.findByRole('button', { name: 'Elegir' }))
+  await chooseWarehouse()
   await userEvent.click(await screen.findByRole('button', { name: 'Ver vista previa FEFO' }))
   await screen.findByText('L-ACE-2402')
   const confirm = screen.getByRole('button', { name: 'Confirmar dispensación' })
@@ -38,6 +45,24 @@ function deferred() {
 }
 
 describe('Dispensación', () => {
+  it('no preselecciona bodega: hay que elegirla antes de la vista previa', async () => {
+    const api = mockApi(baseRoutes({ status: 201, body: { data: dispensation() } }))
+    renderApp('/dispensacion')
+    await userEvent.type(await screen.findByLabelText('Documento del paciente'), '9900000001{Enter}')
+    await userEvent.click(await screen.findByRole('button', { name: 'Elegir' }))
+
+    const select = await screen.findByLabelText('Bodega')
+    await waitFor(() => expect(within(select).getAllByRole('option')).toHaveLength(3))
+    expect(select).toHaveValue('')
+    expect(within(select).getAllByRole('option')[0]).toHaveTextContent('Seleccione…')
+    expect(screen.getByRole('button', { name: 'Ver vista previa FEFO' })).toBeDisabled()
+    expect(screen.getByText('Elige la bodega desde la que se entrega.')).toBeInTheDocument()
+
+    await userEvent.selectOptions(select, '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Ver vista previa FEFO' }))
+    await waitFor(() => expect(api.callsTo('GET', '/dispensations/preview')[0].query.get('warehouse_id')).toBe('2'))
+  })
+
   it('muestra la vista previa FEFO con varios lotes calculada por el backend', async () => {
     const api = mockApi(baseRoutes({ status: 201, body: { data: dispensation() } }))
     renderApp('/dispensacion')

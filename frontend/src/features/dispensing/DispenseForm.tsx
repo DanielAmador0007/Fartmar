@@ -23,7 +23,8 @@ export function DispenseForm({ patientId, prescription, onDone }: Props) {
   const create = useCreateDispensation()
   const guard = useSubmitGuard()
 
-  const warehouseId = selectedWarehouse ?? catalog.data?.warehouses[0]?.id ?? null
+  // Sin bodega por defecto: dispensar desde la bodega equivocada descuenta stock ajeno (M1).
+  const warehouseId = selectedWarehouse
   const { lines, problems } = buildLines(prescription, quantities)
   const currentPreviewLines: PreviewLine[] = lines.map((l) => ({ productId: l.item.product.id, quantity: l.quantity }))
 
@@ -55,7 +56,10 @@ export function DispenseForm({ patientId, prescription, onDone }: Props) {
         value={warehouseId}
         options={catalog.data?.warehouses ?? []}
         onChange={(id) => setSelectedWarehouse(id)}
+        allowEmpty="Seleccione…"
+        required
       />
+      {warehouseId === null && <p className="muted">Elige la bodega desde la que se entrega.</p>}
       <table>
         <thead>
           <tr>
