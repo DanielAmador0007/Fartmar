@@ -1,13 +1,15 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
-import type { Dispensation, DispensationSummary } from '../../api/types'
+import type { Dispensation, DispensationAction, DispensationSummary } from '../../api/types'
 import { apiError, mockApi } from '../../test/http'
 import { catalogRoutes, dispensation, morfina, page } from '../../test/fixtures'
 import { makeUser, meRoute, renderApp } from '../../test/render'
 
-function pending(id: number, createdById: number): Dispensation {
+// La API calcula allowed_actions (OpenAPI 0.5.1): por defecto, un regente distinto del creador puede ambas.
+function pending(id: number, createdById: number, allowed: DispensationAction[] = ['authorize', 'reject']): Dispensation {
   return dispensation({
+    allowed_actions: allowed,
     id,
     status: 'PENDIENTE_AUTORIZACION',
     requires_authorization: true,
@@ -17,8 +19,10 @@ function pending(id: number, createdById: number): Dispensation {
 }
 
 function summary(d: Dispensation): DispensationSummary {
-  const { rejection_reason: _omit, ...rest } = d
-  void _omit
+  // El resumen no trae patient_id, lotes ni motivo de rechazo (S-87).
+  const { rejection_reason: _reason, patient_id: _patient, ...rest } = d
+  void _reason
+  void _patient
   return { ...rest, items: d.items.map(({ id, product, quantity }) => ({ id, product, quantity })) }
 }
 
@@ -74,11 +78,11 @@ describe('Bandeja de autorizaciones', () => {
     expect(api.callsTo('POST', '/dispensations/77/authorize')).toHaveLength(1)
   })
 
-  it('el creador ve Autorizar y Rechazar deshabilitados', async () => {
+  it('allowed_actions vacío (creador) deshabilita Autorizar y Rechazar y lo explica', async () => {
     mockApi({
       ...meRoute(makeUser('regente_farmacia', { id: REGENTE_ID })),
       ...catalogRoutes,
-      'GET /dispensations': page([summary(pending(77, REGENTE_ID)), summary(pending(78, 10))]),
+      'GET /dispensations': page([summary(pending(77, REGENTE_ID, [])), summary(pending(78, 10))]),
     })
     renderApp('/autorizaciones')
 
@@ -110,6 +114,20 @@ describe('Bandeja de autorizaciones', () => {
     expect(await screen.findByText('Dispensación #77 rechazada.')).toBeInTheDocument()
     expect(await screen.findByText('Rechazada', { selector: '.badge' })).toBeInTheDocument()
     expect(api.callsTo('POST', '/dispensations/77/reject')[0].body).toEqual({ reason: 'Fórmula ilegible' })
+  })
+
+  it('la decisión sale de allowed_actions, no del creador: solo reject habilita solo Rechazar', async () => {
+    mockApi({
+      ...meRoute(makeUser('regente_farmacia', { id: REGENTE_ID })),
+      ...catalogRoutes,
+      'GET /dispensations': page([summary(pending(79, 10, ['reject'])), summary(pending(80, 10, []))]),
+    })
+    renderApp('/autorizaciones')
+
+    expect(await screen.findByRole('button', { name: 'Autorizar dispensación 79' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Rechazar dispensación 79' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Autorizar dispensación 80' })).toBeDisabled()
+    expect(screen.getByText('No tienes acciones disponibles.')).toBeInTheDocument()
   })
 
   it('SEGREGACION_FUNCIONES del backend se explica aunque la UI no lo anticipe', async () => {

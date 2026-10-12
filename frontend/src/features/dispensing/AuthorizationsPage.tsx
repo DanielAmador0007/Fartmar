@@ -22,7 +22,7 @@ function DetailPanel({ id, onDone }: { id: number; onDone: (d: Dispensation) => 
           <DispensationSummary dispensation={d} />
           {d.status === 'PENDIENTE_AUTORIZACION' && (
             <section className="card" aria-label="Decisión">
-              <DecisionControls dispensationId={d.id} createdById={d.created_by.id} onDone={onDone} />
+              <DecisionControls dispensation={d} onDone={onDone} />
             </section>
           )}
         </>
@@ -95,7 +95,7 @@ export function AuthorizationsPage() {
                   <td>{d.created_by.name}</td>
                   <td>{formatDateTime(d.created_at)}</td>
                   <td>
-                    <DecisionControls dispensationId={d.id} createdById={d.created_by.id} onDone={setLastDone} />
+                    <DecisionControls dispensation={d} onDone={setLastDone} />
                   </td>
                 </tr>
               ))}

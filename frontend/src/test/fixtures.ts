@@ -104,6 +104,7 @@ export function dispensation(overrides: Partial<Dispensation> = {}): Dispensatio
     rejected_at: null,
     rejection_reason: null,
     created_at: '2026-10-11T15:00:00Z',
+    allowed_actions: [],
     ...overrides,
   }
 }

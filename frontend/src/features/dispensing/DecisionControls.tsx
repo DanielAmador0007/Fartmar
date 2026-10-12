@@ -1,20 +1,19 @@
 import { useState } from 'react'
-import type { Dispensation } from '../../api/types'
+import type { Dispensation, DispensationAction, UserSummary } from '../../api/types'
 import { useCurrentUser } from '../../auth/AuthContext'
 import { ErrorAlert } from '../../components/ui'
 import { useSubmitGuard } from '../../lib/useSubmitGuard'
 import { useAuthorizeDispensation, useRejectDispensation } from './dispensingApi'
 
 interface Props {
-  dispensationId: number
-  createdById: number
+  dispensation: { id: number; created_by: UserSummary; allowed_actions: DispensationAction[] }
   onDone?: (dispensation: Dispensation) => void
 }
 
-// Autorizar / rechazar un control especial (RN-05). Si el usuario actual la
-// creó, los botones quedan deshabilitados (pista visual: la API y la BD
-// rechazan igual con SEGREGACION_FUNCIONES).
-export function DecisionControls({ dispensationId, createdById, onDone }: Props) {
+// Autorizar / rechazar un control especial (RN-05). Qué se habilita lo dice
+// `allowed_actions` de la API (estado + Policy); la interfaz no repite la regla.
+// Cada endpoint vuelve a autorizar (403 SEGREGACION_FUNCIONES al creador).
+export function DecisionControls({ dispensation, onDone }: Props) {
   const user = useCurrentUser()
   const authorize = useAuthorizeDispensation()
   const reject = useRejectDispensation()
@@ -22,8 +21,12 @@ export function DecisionControls({ dispensationId, createdById, onDone }: Props)
   const [rejecting, setRejecting] = useState(false)
   const [reason, setReason] = useState('')
 
-  const isOwn = createdById === user.id
+  const { id, allowed_actions: allowed } = dispensation
+  const canAuthorize = allowed.includes('authorize')
+  const canReject = allowed.includes('reject')
   const busy = authorize.isPending || reject.isPending
+  // Solo para explicar por qué no hay acciones (no decide nada).
+  const isOwn = dispensation.created_by.id === user.id
 
   return (
     <div className="decision">
@@ -31,19 +34,20 @@ export function DecisionControls({ dispensationId, createdById, onDone }: Props)
         <button
           type="button"
           className="primary"
-          disabled={busy || isOwn}
-          title={isOwn ? 'La creaste tú: debe autorizarla otro regente' : undefined}
-          aria-label={`Autorizar dispensación ${dispensationId}`}
-          onClick={() => void guard(() => authorize.mutateAsync(dispensationId).then(onDone))}
+          disabled={busy || !canAuthorize}
+          aria-label={`Autorizar dispensación ${id}`}
+          onClick={() => void guard(() => authorize.mutateAsync(id).then(onDone))}
         >
           {authorize.isPending ? 'Autorizando…' : 'Autorizar'}
         </button>
-        <button type="button" disabled={busy || isOwn} onClick={() => setRejecting((r) => !r)} aria-label={`Rechazar dispensación ${dispensationId}`}>
+        <button type="button" disabled={busy || !canReject} onClick={() => setRejecting((r) => !r)} aria-label={`Rechazar dispensación ${id}`}>
           Rechazar
         </button>
-        {isOwn && <span className="muted">La creaste tú: debe autorizarla otro regente.</span>}
+        {allowed.length === 0 && (
+          <span className="muted">{isOwn ? 'La creaste tú: debe autorizarla otro regente.' : 'No tienes acciones disponibles.'}</span>
+        )}
       </div>
-      {rejecting && !isOwn && (
+      {rejecting && canReject && (
         <div className="inline-form">
           <label className="grow">
             Motivo del rechazo (mínimo 5 caracteres)
@@ -53,7 +57,7 @@ export function DecisionControls({ dispensationId, createdById, onDone }: Props)
             type="button"
             className="danger"
             disabled={busy || reason.trim().length < 5}
-            onClick={() => void guard(() => reject.mutateAsync({ id: dispensationId, reason: reason.trim() }).then(onDone))}
+            onClick={() => void guard(() => reject.mutateAsync({ id, reason: reason.trim() }).then(onDone))}
           >
             {reject.isPending ? 'Rechazando…' : 'Confirmar rechazo'}
           </button>

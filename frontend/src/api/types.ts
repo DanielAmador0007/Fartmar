@@ -1,4 +1,6 @@
-// Tipos de la API v1 (fuente de verdad: docs/openapi.yaml 0.4.0).
+// Tipos de la API v1, escritos A MANO contra docs/openapi.yaml (0.5.1), que es la
+// fuente de verdad. Compromiso aceptado: no se generan desde el OpenAPI para no
+// agregar herramientas; al cambiar el contrato hay que actualizar este archivo.
 // Solo se tipan los campos que usa la interfaz.
 
 export type Role = 'auxiliar_farmacia' | 'regente_farmacia' | 'medico' | 'auditor' | 'admin'
@@ -128,6 +130,8 @@ export interface FefoPreview {
 
 export type DispensationStatus = 'PENDIENTE_AUTORIZACION' | 'COMPLETADA' | 'RECHAZADA'
 
+export type DispensationAction = 'authorize' | 'reject'
+
 export interface DispensationRequest {
   patient_id: number
   prescription_id: number
@@ -156,10 +160,12 @@ export interface Dispensation {
   rejected_at: string | null
   rejection_reason: string | null
   created_at: string
+  // Lo que el usuario actual puede hacer ya (PENDIENTE + Policy, RN-05); [] si nada.
+  allowed_actions: DispensationAction[]
 }
 
-// Fila de GET /dispensations (S-87): sin datos del paciente, sin lotes ni motivo de rechazo.
-export type DispensationSummary = Omit<Dispensation, 'items' | 'rejection_reason'> & {
+// Fila de GET /dispensations (S-87): sin paciente (ni patient_id), sin lotes ni motivo de rechazo.
+export type DispensationSummary = Omit<Dispensation, 'items' | 'rejection_reason' | 'patient_id'> & {
   items: { id: number; product: ProductSummary & { is_controlled: boolean }; quantity: number }[]
 }
 
