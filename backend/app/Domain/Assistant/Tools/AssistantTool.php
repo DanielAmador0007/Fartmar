@@ -53,6 +53,18 @@ abstract class AssistantTool
     abstract public function run(array $args): array;
 
     /**
+     * Versión de los datos que se envía al MODELO. Por defecto, la misma que
+     * recibe la UI; una herramienta con texto libre de usuarios la recorta.
+     *
+     * @param  array<string, mixed>  $data  resultado de run()
+     * @return array<string, mixed>
+     */
+    public function forModel(array $data): array
+    {
+        return $data;
+    }
+
+    /**
      * Ajustes de forma antes de validar (los modelos a veces mandan el código
      * de bodega en minúsculas o con espacios).
      *

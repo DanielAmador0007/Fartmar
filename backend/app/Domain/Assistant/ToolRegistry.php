@@ -112,6 +112,8 @@ final class ToolRegistry
             return ToolResult::failure('ARGUMENTOS_INVALIDOS', implode(' ', $validator->errors()->all()));
         }
 
-        return ToolResult::success($tool->run($validator->validated()));
+        $data = $tool->run($validator->validated());
+
+        return ToolResult::success($data, $tool->forModel($data));
     }
 }

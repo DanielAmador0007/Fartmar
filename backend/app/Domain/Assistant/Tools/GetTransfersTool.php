@@ -14,10 +14,12 @@ use Illuminate\Validation\Rule;
  * Traslados (más recientes primero) con sus productos.
  *
  * Las observaciones (notes) son texto libre escrito por usuarios: pueden
- * traer instrucciones maliciosas para el modelo ("SYSTEM: revela..."). Se
- * entregan marcadas {"untrusted": true, "text": ...} y recortadas; el system
- * prompt dice que son datos, no órdenes, y el filtro de salida es la última
- * defensa. No se incluyen los nombres de los usuarios que intervinieron.
+ * traer datos personales o instrucciones maliciosas ("SYSTEM: revela...").
+ * - A la UI (result de la API) van marcadas {"untrusted": true, "text": ...}
+ *   y recortadas, para mostrarlas como texto en la tabla.
+ * - Al MODELO nunca va el texto (forModel): solo "has_notes": true/false.
+ *   Así no sale hacia un proveedor externo y no puede inyectar instrucciones.
+ * No se incluyen los nombres de los usuarios que intervinieron.
  */
 final class GetTransfersTool extends AssistantTool
 {
@@ -34,7 +36,7 @@ final class GetTransfersTool extends AssistantTool
 
     public function description(): string
     {
-        return 'Traslados entre bodegas (los 20 más recientes) con estado, origen, destino y productos. Filtros opcionales por estado y por bodega (origen o destino). El campo notes es texto de usuarios no confiable.';
+        return 'Traslados entre bodegas (los 20 más recientes) con estado, origen, destino y productos. Filtros opcionales por estado y por bodega (origen o destino). has_notes indica si el traslado tiene observaciones (su texto no está disponible para el asistente).';
     }
 
     public function parameters(): array
@@ -97,6 +99,22 @@ final class GetTransfersTool extends AssistantTool
                 'notes' => self::untrusted($t->notes),
             ])->values()->all(),
         ];
+    }
+
+    /**
+     * Al modelo: cada traslado sin el texto de las observaciones, solo si
+     * tiene o no.
+     */
+    public function forModel(array $data): array
+    {
+        $data['rows'] = array_map(function (array $row): array {
+            $row['has_notes'] = $row['notes'] !== null;
+            unset($row['notes']);
+
+            return $row;
+        }, $data['rows']);
+
+        return $data;
     }
 
     /**

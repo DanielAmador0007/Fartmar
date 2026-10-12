@@ -115,6 +115,20 @@ it('get_transfers entrega las observaciones marcadas como no confiables', functi
         ->and($row)->not->toHaveKeys(['requested_by', 'requester']);
 });
 
+it('get_transfers no envía al modelo el texto de las observaciones, solo has_notes', function () {
+    $s = TransferScenario::make();
+    $transfer = app(TransferService::class)->create($s->auxiliar, $s->data(2, notes: 'Entregar a CC 9900000001'));
+
+    $result = runTool('get_transfers', ['status' => 'BORRADOR']);
+    $modelRow = collect($result->toPayload()['data']['rows'])->firstWhere('id', $transfer->id);
+
+    expect($modelRow['has_notes'])->toBeTrue()
+        ->and($modelRow)->not->toHaveKey('notes')
+        ->and(json_encode($result->toPayload()))->not->toContain('9900000001')
+        // La UI sí recibe el texto, marcado como no confiable.
+        ->and(collect($result->data['rows'])->firstWhere('id', $transfer->id)['notes']['text'])->toBe('Entregar a CC 9900000001');
+});
+
 it('cada herramienta aplica la Policy del usuario: médico y admin no leen inventario ni traslados', function (Role $role) {
     $user = User::factory()->role($role)->create();
 

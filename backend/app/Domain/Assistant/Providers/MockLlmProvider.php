@@ -22,7 +22,7 @@ use App\Domain\Assistant\ToolCall;
  *   3ª llamada: redacta la respuesta con los datos del <tool_result>.
  *
  * Las bodegas las reconoce leyendo el catálogo del system prompt, como haría
- * un modelo real. Nunca copia el texto libre de las observaciones (notes).
+ * un modelo real. Las observaciones de traslados no le llegan (solo has_notes).
  * Sin intención reconocida responde la respuesta estándar de fuera de alcance.
  */
 final class MockLlmProvider implements LlmProvider
@@ -341,9 +341,9 @@ final class MockLlmProvider implements LlmProvider
             isset($r['dispatched_at']) ? ", despachado el {$r['dispatched_at']}" : '',
         ));
 
-        // Las observaciones son texto de usuarios (untrusted): no se repiten.
-        if (array_filter(array_column($rows, 'notes')) !== []) {
-            $text .= "\nAlgunos traslados tienen observaciones escritas por usuarios; no las repito porque son texto no verificado. Puede verlas en el detalle del traslado.";
+        // El texto de las observaciones no llega al modelo (solo has_notes).
+        if (in_array(true, array_column($rows, 'has_notes'), true)) {
+            $text .= "\nAlgunos traslados tienen observaciones escritas por usuarios; el asistente no las lee porque son texto no verificado. Puede verlas en la tabla o en el detalle del traslado.";
         }
 
         return $text;
