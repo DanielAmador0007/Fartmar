@@ -436,3 +436,23 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Sin catálogo real, un producto sin existencias no se puede elegir en traslados; el médico no tiene pantalla para crear prescripciones.
   - La vista previa FEFO puede quedar desactualizada entre la consulta y la confirmación (el backend reasigna).
   - No se probó en navegador real con clics (solo pruebas jsdom y humo HTTP a través del proxy de Vite).
+
+### 2026-10-11 — Fase 5: endpoints de catálogo y listado de dispensaciones
+- Agente: backend-dominio
+- Qué generó la IA:
+  - `GET /api/v1/warehouses` y `GET /api/v1/products` (`CatalogController` → `IndexWarehouseRequest`/`IndexProductRequest` → `WarehousePolicy`/`ProductPolicy` → `Domain/Catalog/CatalogQuery` → `WarehouseSummaryResource`/`ProductResource`).
+  - `GET /api/v1/dispensations` (`DispensationController::index` → `IndexDispensationRequest` → `DispensationPolicy::viewAny` → `Domain/Dispensing/DispensationQuery` → `DispensationSummaryResource`).
+  - Pruebas: `tests/Feature/Api/CatalogApiTest.php`, `tests/Feature/Api/DispensationIndexApiTest.php` y tres filas nuevas en `AuthorizationMatrixTest` (5 roles + sin autenticar). `docs/openapi.yaml` 0.5.0. Supuestos S-86 a S-88.
+- Qué decisión tomó y por qué:
+  - Son consultas de solo lectura: no hay transacción ni bloqueos; el flujo es "valida filtros → autoriza → consulta paginada con eager loading → recurso". No mueven stock ni escriben kardex.
+  - El listado de dispensaciones usa un recurso **resumido** propio (no `DispensationResource`): solo `patient_id`, sin lotes ni motivo de rechazo. Así no expone datos personales y no necesita una fila de bitácora por paciente; el detalle sigue registrando el acceso (S-87).
+  - Catálogos para todos los roles: no tienen datos personales y el médico necesita productos para prescribir (S-86). Bodegas sin filtro de "activas" porque el modelo no tiene esa columna.
+  - La búsqueda de productos escapa `%`, `_` y `\` antes del `ILIKE` para que el texto del usuario se busque literal.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué el listado no registra en `patient_access_logs` y el detalle sí (qué datos expone cada uno).
+  - Que `DispensationPolicy::viewAny` tiene los mismos roles que `view` y que la matriz de autorización falla si una ruta nueva no se agrega.
+  - El orden por `created_at DESC, id DESC` desempata filas creadas en el mismo instante.
+- Riesgos o cosas que podrían estar mal:
+  - El `patient_id` del listado es un identificador interno; quien también puede leer pacientes puede cruzarlo (ese cruce sí queda en bitácora).
+  - `ILIKE '%texto%'` no usa índice: con un catálogo muy grande convendría un índice trigram (`pg_trgm`). Para el tamaño de una IPS no es necesario.
+  - El frontend todavía usa S-80/S-81; hay que migrar las pantallas (S-88).
