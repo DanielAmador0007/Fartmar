@@ -88,6 +88,19 @@ it('busca productos por nombre o código sin distinguir mayúsculas', function (
     $this->getJson('/api/v1/products?q=%20%20')->assertOk()->assertJsonCount(2, 'data');
 });
 
+it('la búsqueda de productos no distingue tildes (en el término ni en el nombre)', function () {
+    $ace = Product::factory()->create(['code' => 'MED-100', 'name' => 'Acetaminofén 500 mg']);
+    $los = Product::factory()->create(['code' => 'MED-200', 'name' => 'Losartan 50 mg']);
+    Sanctum::actingAs(User::factory()->auxiliar()->create());
+
+    $this->getJson('/api/v1/products?q=acetaminofen')
+        ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $ace->id);
+    $this->getJson('/api/v1/products?q=ACETAMINOFÉN')
+        ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $ace->id);
+    $this->getJson('/api/v1/products?q='.urlencode('losartán'))
+        ->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $los->id);
+});
+
 it('los comodines % y _ de la búsqueda se tratan como texto literal', function () {
     Product::factory()->create(['name' => 'Acetaminofén 500 mg']);
     $literal = Product::factory()->create(['name' => 'Solución 0,9% salina']);
