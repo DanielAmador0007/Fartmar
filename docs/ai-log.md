@@ -495,3 +495,22 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - `allowed_actions` es una pista de interfaz; la autorización real sigue en el endpoint, el servicio y el CHECK de la BD.
 - Riesgos o cosas que podrían estar mal:
   - El frontend (`api/types.ts`, `DecisionControls`) aún no usa `allowed_actions` y `DispensationSummary` sigue declarando `patient_id`; hay que ajustar el tipo y pasar a decidir los botones con `allowed_actions`.
+
+### 2026-10-11 — Fase 5: corrección de los hallazgos del revisor-senior (frontend)
+- Agente: frontend-react
+- Qué generó la IA:
+  - **A1** `errors.ts`: `PRESCRIPCION_NO_VIGENTE` con mensaje por `details.reason` (VENCIDA con fecha, COMPLETADA, ANULADA, PACIENTE_NO_CORRESPONDE, LINEA_NO_CORRESPONDE); `TRASLADO_INVALIDO`, `AJUSTE_INVALIDO` y códigos sin texto propio usan el mensaje del servidor (corto, de una línea); `ERROR_INTERNO` sigue genérico.
+  - **M1** la dispensación no preselecciona bodega. **M2** `DecisionControls` habilita con `allowed_actions`; `DispensationSummary` sin `patient_id`. **M3** `newUuid()` con respaldo `crypto.getRandomValues` (UUID v4) si no hay `randomUUID`. **M4** `TransferActions` con key solo por id y error visible aunque no queden acciones. **M6** umbral de alerta desde `alerts.expiry_days` (nivel `withinAlert`). **L1** `/auth/me` sin red no cierra sesión: pantalla con Reintentar. **L2** usuarios: fila con su propia mutación, rol con Guardar/Descartar, reset limpiado solo al éxito. **L10** S-88 corregido. **L11** cabecera de `types.ts`.
+  - **M5** pruebas de kardex, creación de traslado, discrepancias y reintentos de dispensación (SIN_CONEXION reutiliza la clave; IDEMPOTENCIA_CONFLICTO la renueva). 104 pruebas en total.
+- Qué decisión tomó y por qué:
+  - Las pruebas de doble clic de M5 destaparon dos casos reales: tras resolver una discrepancia o decidir una dispensación, el formulario seguía activo hasta recargar la lista y un segundo clic rápido reenviaba (la API respondería 409). Ahora el control se retira al tener éxito.
+  - No se muestra `error.message` en `ERROR_INTERNO` aunque venga: con `APP_DEBUG` un 500 podría traer detalle técnico.
+  - En M2 los botones se deshabilitan (no se ocultan) cuando la acción no está en `allowed_actions`, con texto que explica; el creador ve "La creaste tú".
+  - Cada commit compila por sí solo y lleva su prueba (verificado con `tsc -b` y la suite antes de cada commit).
+- Puntos que Daniel debe revisar/entender:
+  - `serverMessage()` en `errors.ts`: cuándo se confía en el texto del servidor.
+  - El flujo de estado `error` en `AuthProvider`/`RequireAuth` (solo 401 cierra sesión).
+  - Por qué la key de `TransferActions` no incluye el estado.
+- Riesgos o cosas que podrían estar mal:
+  - Si el backend cambia textos de error, la interfaz los mostrará tal cual en los códigos sin mapa propio.
+  - `CRITICAL_DAYS` (30) sigue fijo en el cliente; solo la ventana de alerta viene de la API.
