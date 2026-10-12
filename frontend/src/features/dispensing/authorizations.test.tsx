@@ -78,6 +78,23 @@ describe('Bandeja de autorizaciones', () => {
     expect(api.callsTo('POST', '/dispensations/77/authorize')).toHaveLength(1)
   })
 
+  it('tras autorizar, la fila deja de ofrecer acciones aunque la lista aún no se haya recargado', async () => {
+    const api = mockApi({
+      ...meRoute(makeUser('regente_farmacia', { id: REGENTE_ID })),
+      ...catalogRoutes,
+      // Lista "atrasada": sigue devolviendo la fila pendiente.
+      'GET /dispensations': page([summary(pending(77, 10))]),
+      'POST /dispensations/77/authorize': { body: { data: { ...pending(77, 10, []), status: 'COMPLETADA' } } },
+    })
+    renderApp('/autorizaciones')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Autorizar dispensación 77' }))
+
+    expect(await screen.findByText('Decisión registrada.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Autorizar dispensación 77' })).not.toBeInTheDocument()
+    expect(api.callsTo('POST', '/dispensations/77/authorize')).toHaveLength(1)
+  })
+
   it('allowed_actions vacío (creador) deshabilita Autorizar y Rechazar y lo explica', async () => {
     mockApi({
       ...meRoute(makeUser('regente_farmacia', { id: REGENTE_ID })),

@@ -28,6 +28,11 @@ export function DecisionControls({ dispensation, onDone }: Props) {
   // Solo para explicar por qué no hay acciones (no decide nada).
   const isOwn = dispensation.created_by.id === user.id
 
+  // Decidida: se retiran los botones sin esperar la recarga de la bandeja.
+  if (authorize.isSuccess || reject.isSuccess) {
+    return <p className="muted">Decisión registrada.</p>
+  }
+
   return (
     <div className="decision">
       <div className="actions">
