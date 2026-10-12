@@ -203,7 +203,8 @@ it('las prescripciones del paciente traen lo prescrito, lo entregado, lo reserva
 
 it('una prescripción vencida aparece como no vigente', function () {
     $s = DispensingScenario::make();
-    $s->prescription->update(['valid_until' => now()->subDays(1)->toDateString(), 'issued_at' => now()->subDays(10)]);
+    // "Ayer" en Bogotá (S-13): con now() en UTC, entre las 00:00 y las 05:00 UTC "ayer UTC" es hoy en Bogotá.
+    $s->prescription->update(['valid_until' => now('America/Bogota')->subDays(1)->toDateString(), 'issued_at' => now()->subDays(10)]);
     Sanctum::actingAs($s->regente);
 
     $this->getJson("/api/v1/patients/{$s->patient->id}/prescriptions")
