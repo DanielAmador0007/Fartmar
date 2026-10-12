@@ -17,6 +17,7 @@ class DatabaseSeeder extends Seeder
             CatalogSeeder::class,
             InventorySeeder::class,
             PatientSeeder::class,
+            TransferSeeder::class,
         ]);
     }
 }
