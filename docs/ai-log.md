@@ -456,3 +456,22 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - El `patient_id` del listado es un identificador interno; quien también puede leer pacientes puede cruzarlo (ese cruce sí queda en bitácora).
   - `ILIKE '%texto%'` no usa índice: con un catálogo muy grande convendría un índice trigram (`pg_trgm`). Para el tamaño de una IPS no es necesario.
   - El frontend todavía usa S-80/S-81; hay que migrar las pantallas (S-88).
+
+### 2026-10-11 — Fase 5: frontend con catálogos, prescripción del médico y bandeja de autorizaciones
+- Agente: frontend-react
+- Qué generó la IA:
+  - `features/catalog/useCatalog.ts` ahora usa `GET /warehouses` y `GET /products` (S-86) en vez de derivar de `/stocks`; `useProductSearch(q)` para prescribir.
+  - Pantalla del médico dentro de Pacientes: `PrescriptionForm.tsx` + `prescriptionLines.ts` (cuerpo de `POST /prescriptions`, fecha entre mañana y hoy + 365, cantidades 1–10000, indicaciones ≤ 255 en `null` si vacías), búsqueda con `useDebouncedValue` (300 ms), anti doble clic y recarga de la lista de prescripciones. Permiso `createPrescription` (solo médico).
+  - `/autorizaciones` como bandeja: `GET /dispensations?status=PENDIENTE_AUTORIZACION` con filtro por bodega, `DecisionControls.tsx` (autorizar / rechazar con motivo) en cada fila y en el detalle `?id=`; se eliminó la búsqueda por número.
+  - Pruebas nuevas: catálogo desde los nuevos endpoints, prescripción (envío, validación, doble clic, error 422, auditor sin formulario) y bandeja (lista, filtro, autorizar con doble clic, creador deshabilitado, rechazo con motivo, SEGREGACION_FUNCIONES). 69 pruebas en total.
+  - S-80 y S-81 marcados como superados (S-86, S-87/S-88).
+- Qué decisión tomó y por qué:
+  - La prescripción vive en la pantalla Pacientes (el médico ya la tenía en el menú) en vez de una sección nueva: buscar paciente → ver prescripciones → prescribir es un solo flujo.
+  - Los botones de decisión se deshabilitan (no se ocultan) para el creador, con el motivo visible; el backend responde igual `SEGREGACION_FUNCIONES` si se fuerza.
+  - El detalle sigue usando `GET /dispensations/{id}` (deja bitácora, S-75); la bandeja solo usa el resumen sin datos del paciente (S-87).
+- Puntos que Daniel debe revisar/entender:
+  - `useAfterDecision` en `dispensingApi.ts`: qué cachés se actualizan tras autorizar/rechazar.
+  - `validUntilRange` calcula mañana/hoy + 365 con la fecha de Bogotá del navegador; la API vuelve a validar con su reloj.
+- Riesgos o cosas que podrían estar mal:
+  - La búsqueda de productos pide como máximo 20 resultados; con un catálogo grande hay que afinar `q`.
+  - La prueba de humo de la bandeja devolvió lista vacía (no hay pendientes en la BD de demo); el flujo con datos se cubrió solo con pruebas simuladas.
