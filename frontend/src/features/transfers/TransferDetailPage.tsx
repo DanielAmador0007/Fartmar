@@ -93,7 +93,8 @@ export function TransferDetailPage() {
               </tbody>
             </table>
           </section>
-          <TransferActions key={`${t.id}-${t.status}`} transfer={t} />
+          {/* key solo por id: si cambia el estado (p. ej. tras un 409) no se pierde el error. */}
+          <TransferActions key={t.id} transfer={t} />
           {t.status === 'RECIBIDO_PARCIAL' && <DiscrepanciesPanel transferId={t.id} />}
         </>
       )}

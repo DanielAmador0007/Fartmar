@@ -34,8 +34,15 @@ export function TransferActions({ transfer }: { transfer: Transfer }) {
     void guard(() => mutation.mutateAsync(input))
   }
 
+  // El error se muestra aunque ya no queden acciones: tras un 409 el detalle se
+  // recarga con el estado nuevo y el usuario debe ver por qué falló (M4).
   if (allowed.length === 0) {
-    return <p className="muted">No hay acciones disponibles para ti en este estado.</p>
+    return (
+      <>
+        <p className="muted">No hay acciones disponibles para ti en este estado.</p>
+        <ErrorAlert error={mutation.error} action={lastAction ? ACTION_TEXT[lastAction] : undefined} />
+      </>
+    )
   }
 
   return (

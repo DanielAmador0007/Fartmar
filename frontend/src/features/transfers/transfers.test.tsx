@@ -81,6 +81,28 @@ describe('Acciones de traslado según allowed_actions', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('usuario distinto de quien creó o solicitó')
   })
 
+  it('tras un 409 TRANSICION_INVALIDA el mensaje sigue visible aunque el detalle se recargue con otro estado', async () => {
+    let current = transfer({ allowed_actions: ['approve'] })
+    const api = mockApi({
+      ...meRoute(makeUser('regente_farmacia')),
+      ...emptyDiscrepancies,
+      'GET /transfers/5': () => ({ body: { data: current } }),
+      'POST /transfers/5/approve': () => {
+        // Otro regente lo aprobó primero.
+        current = transfer({ status: 'APROBADO', allowed_actions: [] })
+        return apiError(409, 'TRANSICION_INVALIDA', 'x', { from: 'APROBADO', to: 'APROBADO' })
+      },
+    })
+    renderApp('/traslados/5')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Aprobar' }))
+
+    expect(await screen.findByText('Aprobado', { selector: '.badge' })).toBeInTheDocument()
+    await waitFor(() => expect(api.callsTo('GET', '/transfers/5').length).toBeGreaterThanOrEqual(2))
+    expect(screen.getByRole('alert')).toHaveTextContent('Esta acción ya no es válida en el estado actual')
+    expect(screen.queryByRole('button', { name: 'Aprobar' })).not.toBeInTheDocument()
+  })
+
   it('anular exige motivo de al menos 5 caracteres', async () => {
     renderDetail('auxiliar_farmacia', ['cancel'])
     const button = await screen.findByRole('button', { name: 'Anular' })
