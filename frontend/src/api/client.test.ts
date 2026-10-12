@@ -131,7 +131,40 @@ describe('errorMessage', () => {
     )
   })
 
-  it('código desconocido → mensaje genérico', () => {
-    expect(errorMessage(make('ALGO_RARO'))).toMatch(/error inesperado/)
+  it('código desconocido → mensaje del servidor (ya en español)', () => {
+    expect(errorMessage(make('ALGO_RARO'))).toBe('servidor')
+  })
+
+  it('código desconocido sin mensaje → genérico', () => {
+    expect(errorMessage(new ApiError({ status: 409, code: 'ALGO_RARO', message: '' }))).toMatch(/error inesperado/)
+  })
+
+  it('ERROR_INTERNO nunca muestra el texto del servidor', () => {
+    expect(errorMessage(new ApiError({ status: 500, code: 'ERROR_INTERNO', message: 'SQLSTATE...' }))).toMatch(/error inesperado/)
+  })
+
+  it.each([
+    ['COMPLETADA', 'La prescripción ya fue entregada en su totalidad.'],
+    ['ANULADA', 'La prescripción fue anulada y no se puede dispensar.'],
+    ['PACIENTE_NO_CORRESPONDE', 'La prescripción no pertenece al paciente seleccionado.'],
+    ['LINEA_NO_CORRESPONDE', 'Algunos medicamentos no hacen parte de la prescripción. Actualiza la pantalla.'],
+  ])('PRESCRIPCION_NO_VIGENTE con reason %s', (reason, expected) => {
+    expect(errorMessage(make('PRESCRIPCION_NO_VIGENTE', { reason }))).toBe(expected)
+  })
+
+  it('PRESCRIPCION_NO_VIGENTE VENCIDA incluye la fecha', () => {
+    expect(errorMessage(make('PRESCRIPCION_NO_VIGENTE', { reason: 'VENCIDA', valid_until: '2026-10-01' }))).toBe(
+      'La prescripción venció el 2026-10-01. El paciente necesita una nueva fórmula.',
+    )
+  })
+
+  it('TRASLADO_INVALIDO usa el mensaje específico del servidor (p. ej. PRODUCTO_REPETIDO)', () => {
+    const error = new ApiError({
+      status: 422,
+      code: 'TRASLADO_INVALIDO',
+      message: 'Hay productos repetidos en el traslado.',
+      details: { reason: 'PRODUCTO_REPETIDO', product_ids: [3] },
+    })
+    expect(errorMessage(error)).toBe('Hay productos repetidos en el traslado.')
   })
 })

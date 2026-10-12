@@ -130,6 +130,14 @@ describe('Dispensación', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('El lote está vencido: no se puede dispensar ni trasladar.')
   })
 
+  it('PRESCRIPCION_NO_VIGENTE con reason COMPLETADA explica que ya se entregó todo', async () => {
+    mockApi(baseRoutes(apiError(422, 'PRESCRIPCION_NO_VIGENTE', 'x', { prescription_id: 1, reason: 'COMPLETADA' })))
+    renderApp('/dispensacion')
+    await userEvent.click(await goToConfirm())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('La prescripción ya fue entregada en su totalidad.')
+  })
+
   it('un control especial queda "Pendiente de autorización"', async () => {
     const controlled = prescription({
       items: [{ ...prescription().items[0], product: morfina }],

@@ -25,6 +25,34 @@ function validationMessage(details: Record<string, unknown>): string {
   return 'Revisa los datos ingresados.'
 }
 
+const GENERIC = 'Ocurrió un error inesperado. Intenta de nuevo; si persiste, reporta el código de soporte.'
+
+// Mensaje del servidor (ya en español) si es texto corto de una línea; nunca trazas.
+function serverMessage(error: ApiError): string | null {
+  const text = error.message.trim()
+  return text && text.length <= 300 && !text.includes('\n') ? text : null
+}
+
+const PRESCRIPTION_REASONS: Record<string, string> = {
+  COMPLETADA: 'La prescripción ya fue entregada en su totalidad.',
+  ANULADA: 'La prescripción fue anulada y no se puede dispensar.',
+  PACIENTE_NO_CORRESPONDE: 'La prescripción no pertenece al paciente seleccionado.',
+  LINEA_NO_CORRESPONDE: 'Algunos medicamentos no hacen parte de la prescripción. Actualiza la pantalla.',
+}
+
+// PRESCRIPCION_NO_VIGENTE agrupa varios motivos (details.reason).
+function prescriptionNotValid(d: Record<string, unknown>, fallback: string | null): string {
+  const reason = str(d, 'reason')
+  if (reason === 'VENCIDA') {
+    const validUntil = str(d, 'valid_until')
+    return validUntil
+      ? `La prescripción venció el ${validUntil}. El paciente necesita una nueva fórmula.`
+      : 'La prescripción está vencida. El paciente necesita una nueva fórmula.'
+  }
+  if (reason && PRESCRIPTION_REASONS[reason]) return PRESCRIPTION_REASONS[reason]
+  return fallback ?? 'La prescripción no está vigente.'
+}
+
 export interface ErrorContext {
   // Qué intentaba hacer el usuario, para el 403: "No tienes permiso para <action>."
   action?: string
@@ -55,12 +83,8 @@ export function errorMessage(error: unknown, context: ErrorContext = {}): string
       }
       return 'La cantidad supera lo que queda por entregar de la prescripción.'
     }
-    case 'PRESCRIPCION_NO_VIGENTE': {
-      const validUntil = str(d, 'valid_until')
-      return validUntil
-        ? `La prescripción no está vigente (venció el ${validUntil}). El paciente necesita una nueva fórmula.`
-        : 'La prescripción no está vigente. El paciente necesita una nueva fórmula.'
-    }
+    case 'PRESCRIPCION_NO_VIGENTE':
+      return prescriptionNotValid(d, serverMessage(error))
     case 'TRANSICION_INVALIDA':
       return 'Esta acción ya no es válida en el estado actual (otro usuario pudo haberlo cambiado). Actualiza la pantalla.'
     case 'SEGREGACION_FUNCIONES': {
@@ -87,17 +111,21 @@ export function errorMessage(error: unknown, context: ErrorContext = {}): string
     case 'CONFLICTO_CONCURRENCIA':
       return 'Otro usuario estaba modificando las mismas existencias. Intenta de nuevo: es seguro reintentar.'
     case 'TRASLADO_INVALIDO':
-      return 'Los datos del traslado no son válidos. Revisa las cantidades y los lotes.'
+      // details.reason (MISMA_BODEGA, PRODUCTO_REPETIDO, LOTES_NO_COINCIDEN…): el texto del servidor es específico.
+      return serverMessage(error) ?? 'Los datos del traslado no son válidos. Revisa las cantidades y los lotes.'
     case 'AJUSTE_INVALIDO':
-      return 'El ajuste no es válido. Revisa la bodega, el lote y la cantidad.'
+      return serverMessage(error) ?? 'El ajuste no es válido. Revisa la bodega, el lote y la cantidad.'
     case 'OPERACION_NO_PERMITIDA':
       return 'No puedes desactivarte ni quitarte el rol de administrador a ti mismo.'
     case 'CAMBIO_CLAVE_REQUERIDO':
       return 'Debes cambiar tu contraseña temporal antes de continuar.'
     case 'SIN_CONEXION':
       return 'No hay conexión con el servidor. Revisa la red e intenta de nuevo.'
+    case 'ERROR_INTERNO':
+      return GENERIC
     default:
-      return 'Ocurrió un error inesperado. Intenta de nuevo; si persiste, reporta el código de soporte.'
+      // Código sin texto propio: el mensaje del servidor ya viene en español para el usuario.
+      return serverMessage(error) ?? GENERIC
   }
 }
 
