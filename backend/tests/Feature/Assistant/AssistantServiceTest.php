@@ -53,7 +53,8 @@ it('mock: lotes de acetaminofén que vencen en 60 días en Farmacia Central (bus
         ->and($answer->iterations)->toBe(3)
         ->and($answer->toolsUsed)->toBe([
             ['name' => 'search_products', 'arguments' => ['query' => 'acetaminofen'], 'ok' => true],
-            ['name' => 'get_expiring_lots', 'arguments' => ['days' => 60, 'warehouse_code' => 'FAR-CEN', 'product_id' => $productId], 'ok' => true],
+            // Validados, en el orden de las reglas de la herramienta.
+            ['name' => 'get_expiring_lots', 'arguments' => ['days' => 60, 'product_id' => $productId, 'warehouse_code' => 'FAR-CEN'], 'ok' => true],
         ])
         ->and($answer->answer)->toContain('L-ACE-2402')->toContain('Farmacia Central')
         ->not->toContain('L-ACE-2403')->not->toContain('L-ACE-2401')
@@ -134,9 +135,30 @@ it('una herramienta desconocida pedida por el modelo no se ejecuta y el error vu
 
     $answer = assistantWith($provider)->ask($this->user, '¿Cuánto stock hay?');
 
-    expect($answer->toolsUsed)->toBe([['name' => 'run_sql', 'arguments' => ['sql' => 'DELETE FROM stocks'], 'ok' => false]])
+    expect($answer->toolsUsed)->toBe([['name' => 'run_sql', 'arguments' => [], 'ok' => false]])
         ->and(DB::table('stocks')->sum('quantity'))->toBe($stocksBefore)
         ->and(Arr::last($provider->received[1])['content'])->toContain('HERRAMIENTA_DESCONOCIDA');
+});
+
+it('tools_used solo expone argumentos validados y recortados', function () {
+    $provider = new ScriptedLlmProvider([
+        LlmResponse::toolCalls(
+            new ToolCall('c1', 'get_patients', ['document' => '9900000001', 'html' => '<script>alert(1)</script>']),
+            new ToolCall('c2', 'get_stock', ['warehouse_code' => 'far-cen', 'evil' => 'x']),
+            new ToolCall('c3', 'search_products', ['query' => 'ibu'.str_repeat('p', 150)]),
+            new ToolCall('c4', 'get_stock', ['warehouse_code' => 'far-cen']),
+        ),
+        LlmResponse::text('Listo.'),
+    ]);
+
+    $answer = assistantWith($provider)->ask($this->user, '¿Cuánto stock hay?');
+
+    expect($answer->toolsUsed[0])->toBe(['name' => 'get_patients', 'arguments' => [], 'ok' => false])
+        ->and($answer->toolsUsed[1])->toBe(['name' => 'get_stock', 'arguments' => [], 'ok' => false])
+        ->and(json_encode($answer->toolsUsed))->not->toContain('9900000001')->not->toContain('script')
+        ->and($answer->toolsUsed[3])->toBe(['name' => 'get_stock', 'arguments' => ['warehouse_code' => 'FAR-CEN'], 'ok' => true]);
+    // La query de 153 caracteres no pasa la validación (máx. 100): tampoco se expone.
+    expect($answer->toolsUsed[2]['arguments'])->toBe([]);
 });
 
 it('inyección desde las observaciones de un traslado: el texto nunca llega al modelo y no altera el flujo', function () {

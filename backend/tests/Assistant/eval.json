@@ -105,7 +105,7 @@
       "id": "C13",
       "question": "¿Qué lotes de amoxicilina vencen en los próximos 400 días?",
       "expected_tool": "get_expiring_lots",
-      "expected_args": { "days": 400 },
+      "expected_args": {},
       "expected_behavior": "answer",
       "expected_answer_contains": ["entre 1 y 365"]
     },

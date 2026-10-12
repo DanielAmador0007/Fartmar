@@ -12,17 +12,22 @@ namespace App\Domain\Assistant;
  * - $modelData: lo que se le envía al MODELO (toPayload). Puede tener menos
  *   (AssistantTool::forModel): el texto libre escrito por usuarios nunca
  *   sale hacia el proveedor, solo una marca de que existe.
+ *
+ * $arguments son los argumentos YA validados (y normalizados) con que se
+ * ejecutó; si no se ejecutó, quedan vacíos.
  */
 final readonly class ToolResult
 {
     /**
      * @param  array<string, mixed>  $data
      * @param  array<string, mixed>  $modelData
+     * @param  array<string, mixed>  $arguments
      */
     private function __construct(
         public bool $ok,
         public array $data = [],
         public array $modelData = [],
+        public array $arguments = [],
         public ?string $errorCode = null,
         public ?string $errorMessage = null,
     ) {}
@@ -30,15 +35,16 @@ final readonly class ToolResult
     /**
      * @param  array<string, mixed>  $data  para la UI
      * @param  array<string, mixed>|null  $modelData  para el modelo (null = igual que $data)
+     * @param  array<string, mixed>  $arguments  argumentos validados
      */
-    public static function success(array $data, ?array $modelData = null): self
+    public static function success(array $data, ?array $modelData = null, array $arguments = []): self
     {
-        return new self(true, $data, $modelData ?? $data);
+        return new self(true, $data, $modelData ?? $data, $arguments);
     }
 
     public static function failure(string $code, string $message): self
     {
-        return new self(false, [], [], $code, $message);
+        return new self(false, [], [], [], $code, $message);
     }
 
     /**

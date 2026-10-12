@@ -96,7 +96,13 @@ final class AssistantService
             foreach ($calls as $call) {
                 $toolResult = $this->tools->execute($user, $call);
 
-                $toolsUsed[] = ['name' => mb_substr($call->name, 0, 64), 'arguments' => $call->arguments, 'ok' => $toolResult->ok];
+                // A la API solo van los argumentos validados (los que se usaron);
+                // los que inventó el modelo para una herramienta rechazada, no.
+                $toolsUsed[] = [
+                    'name' => mb_substr($call->name, 0, 64),
+                    'arguments' => $toolResult->ok ? self::clip($toolResult->arguments) : [],
+                    'ok' => $toolResult->ok,
+                ];
                 if ($toolResult->ok && ! in_array($call->name, self::HELPER_TOOLS, true)) {
                     $result = ['tool' => $call->name, ...$toolResult->data];
                 }
@@ -165,6 +171,17 @@ final class AssistantService
             : AssistantAnswer::ANSWERED;
 
         return new AssistantAnswer($text, $outcome, $this->provider->name(), $toolsUsed, $result, $iterations);
+    }
+
+    /**
+     * Recorta los textos a 100 caracteres.
+     *
+     * @param  array<string, mixed>  $arguments
+     * @return array<string, mixed>
+     */
+    private static function clip(array $arguments): array
+    {
+        return array_map(fn (mixed $value) => is_string($value) ? mb_substr($value, 0, 100) : $value, $arguments);
     }
 
     private static function elapsedMs(int|float $started): int
