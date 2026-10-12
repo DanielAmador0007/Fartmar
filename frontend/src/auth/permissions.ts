@@ -10,6 +10,7 @@ export const permissions = {
   dispense: (role: Role) => PHARMACY.includes(role),
   authorizeControlled: (role: Role) => role === 'regente_farmacia',
   viewPatients: (role: Role) => [...PHARMACY, 'medico', 'auditor'].includes(role),
+  createPrescription: (role: Role) => role === 'medico',
   viewInventory: (role: Role) => [...PHARMACY, 'auditor'].includes(role),
   adjustInventory: (role: Role) => role === 'regente_farmacia',
   viewTransfers: (role: Role) => [...PHARMACY, 'auditor'].includes(role),

@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import type { Patient } from '../../api/types'
+import { useCan } from '../../auth/AuthContext'
 import { Empty, ErrorAlert, Loading } from '../../components/ui'
 import { usePrescriptions } from './patientsApi'
 import { PatientCard, PatientSearchForm } from './PatientSearch'
+import { PrescriptionForm } from './PrescriptionForm'
 import { PrescriptionHeader, PrescriptionLines } from './PrescriptionTable'
 
-// Consulta de pacientes y sus prescripciones (solo lectura).
+// Consulta de pacientes y sus prescripciones; el médico además prescribe.
 // El paciente vive solo en el estado de esta pantalla (memoria), nunca en storage.
 export function PatientsPage() {
   const [patient, setPatient] = useState<Patient | null>(null)
   const prescriptions = usePrescriptions(patient?.id ?? null)
+  const canPrescribe = useCan('createPrescription')
 
   return (
     <>
@@ -18,7 +21,8 @@ export function PatientsPage() {
       {patient && (
         <>
           <PatientCard patient={patient} />
-          <section className="card">
+          {canPrescribe && <PrescriptionForm key={patient.id} patientId={patient.id} />}
+          <section className="card" aria-label="Prescripciones">
             <h2>Prescripciones</h2>
             {prescriptions.isPending && <Loading />}
             <ErrorAlert error={prescriptions.error} action="ver prescripciones" />

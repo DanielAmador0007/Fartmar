@@ -1,6 +1,6 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiRequest } from '../../api/client'
-import type { DataEnvelope, DocumentType, Patient, Prescription } from '../../api/types'
+import type { DataEnvelope, DocumentType, Patient, Prescription, PrescriptionRequest } from '../../api/types'
 
 export const DOCUMENT_TYPES: DocumentType[] = ['CC', 'TI', 'CE', 'RC', 'PA']
 
@@ -13,6 +13,18 @@ export const patientsApi = {
     }).then((r) => r.data[0] ?? null),
   prescriptions: (patientId: number) =>
     apiRequest<DataEnvelope<Prescription[]>>(`/patients/${patientId}/prescriptions`).then((r) => r.data),
+  createPrescription: (body: PrescriptionRequest) =>
+    apiRequest<DataEnvelope<Prescription>>('/prescriptions', { method: 'POST', body }).then((r) => r.data),
+}
+
+// Solo médico (S-70). Al crear, se recarga la lista de prescripciones del paciente.
+export function useCreatePrescription() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: patientsApi.createPrescription,
+    onSuccess: (created) =>
+      queryClient.invalidateQueries({ queryKey: ['patients', created.patient_id, 'prescriptions'] }),
+  })
 }
 
 // Mutación (no consulta) para no dejar el documento como clave de caché.
