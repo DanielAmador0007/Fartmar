@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.4.0
+  version: 0.5.0
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
@@ -23,6 +23,7 @@ tags:
   - name: Traslados
   - name: Pacientes
   - name: Usuarios
+  - name: Catálogos
 
 security:
   - bearerAuth: []
@@ -122,6 +123,36 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
 
   /dispensations:
+    get:
+      tags: [Dispensación]
+      summary: Listar dispensaciones (bandeja, p. ej. pendientes de autorización)
+      description: |
+        De la más reciente a la más antigua (`created_at`, luego `id`).
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor`.
+
+        Privacidad (RN-10, S-87): cada fila es un resumen igual para todos los roles. Del paciente solo
+        va `patient_id` (sin nombre ni documento); no incluye los lotes entregados ni el motivo de rechazo.
+        Por eso el listado **no** escribe en `patient_access_logs`; el detalle completo está en
+        `GET /dispensations/{id}`, que sí registra el acceso.
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [PENDIENTE_AUTORIZACION, COMPLETADA, RECHAZADA] } }
+        - { name: warehouse_id, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de dispensaciones resumidas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/DispensationSummary' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
     post:
       tags: [Dispensación]
       summary: Crear una dispensación (idempotente)
@@ -870,6 +901,58 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /warehouses:
+    get:
+      tags: [Catálogos]
+      summary: Listar bodegas
+      description: |
+        Todas las bodegas, ordenadas por código (el modelo no tiene marca de activa/inactiva, S-86).
+        Roles: todos (usuario activo).
+      parameters:
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de bodegas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/WarehouseSummary' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /products:
+    get:
+      tags: [Catálogos]
+      summary: Listar productos (con búsqueda)
+      description: |
+        Ordenados por nombre. `q` busca sin distinguir mayúsculas dentro del nombre **o** del código;
+        `%` y `_` se buscan como texto literal (S-86). `q` vacío o con solo espacios = sin filtro.
+        Roles: todos (usuario activo); el médico lo usa para prescribir.
+      parameters:
+        - { name: q, in: query, schema: { type: string, maxLength: 100 }, example: acetamin }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Página de productos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Product' } }
+                  links: { type: object }
+                  meta: { type: object }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
   /users:
     get:
       tags: [Usuarios]
@@ -1294,6 +1377,59 @@ components:
         id: { type: integer }
         code: { type: string }
         name: { type: string }
+
+    Product:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: MED-001 }
+        name: { type: string, example: Acetaminofén 500 mg }
+        presentation: { type: string, example: Tableta 500 mg }
+        unit: { type: string, example: tableta }
+        is_controlled: { type: boolean, description: 'Control especial: requiere autorización de un segundo regente (RN-05)' }
+        stock_minimums:
+          type: array
+          description: Mínimo de stock por bodega (RN-11); vacío si no hay mínimos definidos
+          items:
+            type: object
+            properties:
+              warehouse_id: { type: integer }
+              min_quantity: { type: integer }
+
+    DispensationSummary:
+      type: object
+      description: Fila del listado de dispensaciones. Sin datos personales del paciente, sin lotes y sin motivo de rechazo (S-87).
+      properties:
+        id: { type: integer }
+        status: { type: string, enum: [PENDIENTE_AUTORIZACION, COMPLETADA, RECHAZADA] }
+        requires_authorization: { type: boolean }
+        patient_id: { type: integer }
+        prescription:
+          type: object
+          properties:
+            id: { type: integer }
+            number: { type: string }
+        warehouse: { $ref: '#/components/schemas/WarehouseSummary' }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              product:
+                type: object
+                properties:
+                  id: { type: integer }
+                  code: { type: string }
+                  name: { type: string }
+                  is_controlled: { type: boolean }
+              quantity: { type: integer }
+        created_by: { $ref: '#/components/schemas/UserSummary' }
+        authorized_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        authorized_at: { type: [string, 'null'], format: date-time }
+        rejected_by: { oneOf: [{ $ref: '#/components/schemas/UserSummary' }, { type: 'null' }] }
+        rejected_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
 
     LotSummary:
       type: object
