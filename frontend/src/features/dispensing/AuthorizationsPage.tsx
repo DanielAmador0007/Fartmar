@@ -1,89 +1,111 @@
-import { useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'react-router'
-import { useCurrentUser } from '../../auth/AuthContext'
-import { ErrorAlert, Loading } from '../../components/ui'
-import { toInt } from '../../lib/format'
-import { useSubmitGuard } from '../../lib/useSubmitGuard'
-import { useAuthorizeDispensation, useDispensation, useRejectDispensation } from './dispensingApi'
+import type { Dispensation } from '../../api/types'
+import { Empty, ErrorAlert, Loading, Pagination, SuccessAlert } from '../../components/ui'
+import { formatDateTime, toInt } from '../../lib/format'
+import { useCatalog } from '../catalog/useCatalog'
+import { WarehouseSelect } from '../catalog/WarehouseSelect'
+import { DecisionControls } from './DecisionControls'
+import { useDispensation, useDispensations } from './dispensingApi'
 import { DispensationSummary } from './DispensationView'
 
-// Autorizar o rechazar un medicamento de control especial (RN-05).
-// La API no tiene un listado de pendientes: se busca por número de dispensación.
+// Detalle completo (GET /dispensations/{id}, deja bitácora de acceso, S-75).
+function DetailPanel({ id, onDone }: { id: number; onDone: (d: Dispensation) => void }) {
+  const query = useDispensation(id)
+  const d = query.data
+  return (
+    <>
+      {query.isPending && <Loading />}
+      <ErrorAlert error={query.error} action="consultar dispensaciones" />
+      {d && (
+        <>
+          <DispensationSummary dispensation={d} />
+          {d.status === 'PENDIENTE_AUTORIZACION' && (
+            <section className="card" aria-label="Decisión">
+              <DecisionControls dispensationId={d.id} createdById={d.created_by.id} onDone={onDone} />
+            </section>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
+// Bandeja de controles especiales pendientes (GET /dispensations, S-87).
 export function AuthorizationsPage() {
-  const user = useCurrentUser()
+  const catalog = useCatalog()
   const [params, setParams] = useSearchParams()
-  const id = toInt(params.get('id') ?? '')
-  const [idInput, setIdInput] = useState(params.get('id') ?? '')
-  const [reason, setReason] = useState('')
-  const dispensation = useDispensation(id)
-  const authorize = useAuthorizeDispensation()
-  const reject = useRejectDispensation()
-  const guard = useSubmitGuard()
-
-  function handleSearch(event: FormEvent) {
-    event.preventDefault()
-    authorize.reset()
-    reject.reset()
-    setParams(idInput.trim() ? { id: idInput.trim() } : {})
-  }
-
-  const d = dispensation.data
-  const busy = authorize.isPending || reject.isPending
-  const isPending = d?.status === 'PENDIENTE_AUTORIZACION'
-  // Pista visual; la regla real (RN-05) la exigen la API y la BD.
-  const isOwn = d?.created_by.id === user.id
+  const selectedId = toInt(params.get('id') ?? '')
+  const [warehouseId, setWarehouseId] = useState<number | null>(null)
+  const [page, setPage] = useState(1)
+  const [lastDone, setLastDone] = useState<Dispensation | null>(null)
+  const list = useDispensations({ status: 'PENDIENTE_AUTORIZACION', warehouse_id: warehouseId, page })
 
   return (
     <>
       <h1>Autorizaciones de control especial</h1>
-      <form className="card inline-form" onSubmit={handleSearch}>
-        <label className="grow">
-          Número de dispensación
-          <input autoFocus inputMode="numeric" value={idInput} onChange={(e) => setIdInput(e.target.value)} placeholder="Número y Enter" />
-        </label>
-        <button type="submit" className="primary">
-          Buscar
-        </button>
-      </form>
+      <div className="actions">
+        <WarehouseSelect
+          label="Bodega"
+          value={warehouseId}
+          options={catalog.data?.warehouses ?? []}
+          allowEmpty="Todas"
+          onChange={(id) => {
+            setWarehouseId(id)
+            setPage(1)
+          }}
+        />
+      </div>
 
-      {dispensation.isFetching && <Loading />}
-      <ErrorAlert error={dispensation.error} action="consultar dispensaciones" />
-
-      {d && (
-        <>
-          <DispensationSummary dispensation={d} />
-          {isPending && isOwn && (
-            <p className="alert alert-warning">Tú creaste esta dispensación: debe autorizarla otro regente.</p>
-          )}
-          {isPending && !isOwn && (
-            <section className="card" aria-label="Decisión">
-              <div className="actions">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void guard(() => authorize.mutateAsync(d.id))}
-                >
-                  {authorize.isPending ? 'Autorizando…' : 'Autorizar y dispensar'}
-                </button>
-              </div>
-              <label>
-                Motivo del rechazo (mínimo 5 caracteres)
-                <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
-              </label>
-              <button
-                type="button"
-                className="danger"
-                disabled={busy || reason.trim().length < 5}
-                onClick={() => void guard(() => reject.mutateAsync({ id: d.id, reason: reason.trim() }))}
-              >
-                {reject.isPending ? 'Rechazando…' : 'Rechazar'}
-              </button>
-            </section>
-          )}
-          <ErrorAlert error={authorize.error ?? reject.error} action="autorizar dispensaciones de control especial" />
-        </>
+      {lastDone && (
+        <SuccessAlert>
+          Dispensación #{lastDone.id} {lastDone.status === 'COMPLETADA' ? 'autorizada y entregada' : 'rechazada'}.
+        </SuccessAlert>
       )}
+
+      <section className="card" aria-label="Pendientes de autorización">
+        <h2>Pendientes de autorización</h2>
+        {list.isPending && <Loading />}
+        <ErrorAlert error={list.error} action="ver dispensaciones pendientes" />
+        {list.data?.data.length === 0 && <Empty>No hay dispensaciones pendientes de autorización.</Empty>}
+        {list.data && list.data.data.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Bodega</th>
+                <th>Prescripción</th>
+                <th>Medicamentos</th>
+                <th>Creada por</th>
+                <th>Fecha</th>
+                <th>Decisión</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.data.data.map((d) => (
+                <tr key={d.id}>
+                  <td>
+                    <button type="button" className="link" onClick={() => setParams({ id: String(d.id) })}>
+                      #{d.id}
+                    </button>
+                  </td>
+                  <td>{d.warehouse.code}</td>
+                  <td>{d.prescription.number}</td>
+                  <td>{d.items.map((i) => `${i.product.name} × ${i.quantity}`).join(', ')}</td>
+                  <td>{d.created_by.name}</td>
+                  <td>{formatDateTime(d.created_at)}</td>
+                  <td>
+                    <DecisionControls dispensationId={d.id} createdById={d.created_by.id} onDone={setLastDone} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {list.data && <Pagination page={page} lastPage={list.data.meta.last_page} onChange={setPage} />}
+      </section>
+
+      {selectedId !== null && <DetailPanel key={selectedId} id={selectedId} onDone={setLastDone} />}
     </>
   )
 }

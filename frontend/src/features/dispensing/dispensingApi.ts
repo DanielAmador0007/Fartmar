@@ -1,7 +1,15 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ApiError, apiRequest } from '../../api/client'
-import type { DataEnvelope, Dispensation, DispensationRequest, FefoPreview } from '../../api/types'
+import type {
+  DataEnvelope,
+  Dispensation,
+  DispensationRequest,
+  DispensationStatus,
+  DispensationSummary,
+  FefoPreview,
+  Paginated,
+} from '../../api/types'
 import { createIdempotencyTracker } from './idempotency'
 
 export const dispensingApi = {
@@ -11,6 +19,8 @@ export const dispensingApi = {
       body: payload,
       headers: { 'Idempotency-Key': idempotencyKey },
     }).then((r) => r.data),
+  list: (f: { status: DispensationStatus | ''; warehouse_id: number | null; page: number }) =>
+    apiRequest<Paginated<DispensationSummary>>('/dispensations', { query: { ...f, per_page: 25 } }),
   get: (id: number) => apiRequest<DataEnvelope<Dispensation>>(`/dispensations/${id}`).then((r) => r.data),
   authorize: (id: number) =>
     apiRequest<DataEnvelope<Dispensation>>(`/dispensations/${id}/authorize`, { method: 'POST' }).then((r) => r.data),
@@ -71,18 +81,39 @@ export function useDispensation(id: number | null) {
   })
 }
 
-export function useAuthorizeDispensation() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (id: number) => dispensingApi.authorize(id),
-    onSuccess: (d) => queryClient.setQueryData(['dispensations', d.id], d),
+export interface DispensationFilters {
+  status: DispensationStatus | ''
+  warehouse_id: number | null
+  page: number
+}
+
+// Bandeja (S-87): resumen sin datos del paciente.
+export function useDispensations(filters: DispensationFilters) {
+  return useQuery({
+    queryKey: ['dispensations', 'list', filters],
+    queryFn: () => dispensingApi.list(filters),
   })
 }
 
-export function useRejectDispensation() {
+// Tras autorizar o rechazar: detalle actualizado y bandeja/existencias recargadas.
+function useAfterDecision() {
   const queryClient = useQueryClient()
+  return (d: Dispensation) => {
+    queryClient.setQueryData(['dispensations', d.id], d)
+    void queryClient.invalidateQueries({ queryKey: ['dispensations', 'list'] })
+    void queryClient.invalidateQueries({ queryKey: ['stocks'] })
+  }
+}
+
+export function useAuthorizeDispensation() {
+  const onSuccess = useAfterDecision()
+  return useMutation({ mutationFn: (id: number) => dispensingApi.authorize(id), onSuccess })
+}
+
+export function useRejectDispensation() {
+  const onSuccess = useAfterDecision()
   return useMutation({
     mutationFn: ({ id, reason }: { id: number; reason: string }) => dispensingApi.reject(id, reason),
-    onSuccess: (d) => queryClient.setQueryData(['dispensations', d.id], d),
+    onSuccess,
   })
 }

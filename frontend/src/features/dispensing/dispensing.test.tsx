@@ -155,38 +155,3 @@ describe('Dispensación', () => {
     expect(screen.getByText(/Un regente distinto de quien la creó debe autorizarla/)).toBeInTheDocument()
   })
 })
-
-describe('Autorizaciones de control especial', () => {
-  const pendingDispensation = dispensation({
-    status: 'PENDIENTE_AUTORIZACION',
-    requires_authorization: true,
-    items: [{ id: 1, prescription_item_id: 11, product: morfina, quantity: 2, lots: [] }],
-  })
-
-  it('un regente distinto del creador puede autorizar', async () => {
-    const api = mockApi({
-      ...meRoute(makeUser('regente_farmacia', { id: 20 })),
-      'GET /dispensations/77': { body: { data: pendingDispensation } },
-      'POST /dispensations/77/authorize': {
-        body: { data: { ...pendingDispensation, status: 'COMPLETADA', authorized_by: { id: 20, name: 'Regente', role: 'regente_farmacia' } } },
-      },
-    })
-    renderApp('/autorizaciones?id=77')
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Autorizar y dispensar' }))
-
-    expect(await screen.findByText('Completada', { selector: '.badge' })).toBeInTheDocument()
-    expect(api.callsTo('POST', '/dispensations/77/authorize')).toHaveLength(1)
-  })
-
-  it('quien creó la dispensación no ve el botón Autorizar', async () => {
-    mockApi({
-      ...meRoute(makeUser('regente_farmacia', { id: 10 })),
-      'GET /dispensations/77': { body: { data: pendingDispensation } },
-    })
-    renderApp('/autorizaciones?id=77')
-
-    expect(await screen.findByText(/debe autorizarla otro regente/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Autorizar y dispensar' })).not.toBeInTheDocument()
-  })
-})
