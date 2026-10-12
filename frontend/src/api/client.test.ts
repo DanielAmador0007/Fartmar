@@ -167,4 +167,16 @@ describe('errorMessage', () => {
     })
     expect(errorMessage(error)).toBe('Hay productos repetidos en el traslado.')
   })
+
+  it('ASISTENTE_NO_DISPONIBLE no muestra el proveedor ni el texto técnico', () => {
+    const error = new ApiError({ status: 503, code: 'ASISTENTE_NO_DISPONIBLE', message: 'timeout', details: { provider: 'ollama' } })
+    expect(errorMessage(error)).toBe(
+      'El asistente no está disponible en este momento. Intenta más tarde; el resto del sistema funciona con normalidad.',
+    )
+  })
+
+  it('DEMASIADAS_SOLICITUDES indica cuánto esperar si viene Retry-After', () => {
+    const error = new ApiError({ status: 429, code: 'DEMASIADAS_SOLICITUDES', message: 'x', retryAfter: 42 })
+    expect(errorMessage(error)).toBe('Demasiadas solicitudes. Espera 42 segundos e intenta de nuevo.')
+  })
 })
