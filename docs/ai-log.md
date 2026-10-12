@@ -544,3 +544,26 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Los filtros por patrones pueden bloquear una pregunta legítima ("¿cambia el stock…?") o dejar pasar una inyección ingeniosa; por eso hay varias capas y ninguna herramienta escribe ni devuelve datos de pacientes.
   - `docker-compose.yml` agrega `extra_hosts: host.docker.internal:host-gateway`; requiere recrear el contenedor `api` para que tome las variables nuevas (los valores por defecto de `config/assistant.php` ya coinciden).
   - El eval lee `tests/Assistant/eval.json`; si la imagen de producción (Fase 7) excluye `tests/`, habrá que copiar ese archivo o correr el eval en CI con el código fuente.
+
+### 2026-10-12 — Fase 6: pantalla del asistente IA (frontend)
+- Agente: frontend-react
+- Qué generó la IA:
+  - `api/types.ts` (cabecera a 0.6.0): `AssistantQueryRequest`, `AssistantAnswer`, `AssistantToolUse`, `UntrustedText` y `AssistantResult` como unión discriminada por `tool` (filas de `get_stock`, `get_expiring_lots`/`get_expired_lots`, `get_below_minimum`, `get_transfers`, `list_warehouses`).
+  - `features/assistant/assistantApi.ts` (mutación `useAskAssistant`, límites 3–500), `AssistantPage.tsx` (caja con contador, Enter/Shift+Enter, ejemplos clicables, "Consultando…", historial en memoria, rechazo/fuera de alcance diferenciados, herramientas plegables con el proveedor) y `AssistantResultTable.tsx` (tabla por herramienta, aviso de `truncated`, observación no confiable marcada).
+  - `errors.ts`: mensaje para `ASISTENTE_NO_DISPONIBLE` (`DEMASIADAS_SOLICITUDES` ya existía; se agregó su prueba).
+  - Permiso `askAssistant` (auxiliar, regente, auditor), ruta `/asistente` y entrada "Asistente" en el menú; estilos en `index.css`.
+  - Pruebas (`assistant.test.tsx`, 14): respuesta + tabla + herramientas, Enter/Shift+Enter, doble clic = una petición, ejemplo con un clic, refused vs out_of_scope, observación con `<script>`/`<img onerror>` como texto, 503 y 429 comprensibles, validación de longitud, menú y pantalla por rol. Se actualizó la prueba de navegación por rol. Total: 120 pruebas Vitest.
+- Qué decisión tomó y por qué:
+  - El permiso se llama `askAssistant` y no `useAssistant` (como el Gate del backend) para que ESLint no lo confunda con un hook de React.
+  - Pregunta por mutación aunque no cambia datos: cada pregunta es una acción del usuario, no se cachea y no se reintenta sola.
+  - Tablas con columnas fijas por herramienta en vez de una tabla genérica: más legible y tipada; lo desconocido no se pinta.
+  - Supuestos S-97 (historial en memoria, orden, ejemplos, teclado) y S-98 (texto plano, notas no confiables, detalle plegable).
+  - Se verificó que la prueba de doble clic falla si se quita `useSubmitGuard` y la deshabilitación del botón.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué React ya protege contra XSS al pintar `{texto}` y qué rompería esa garantía (`dangerouslySetInnerHTML`, `href` con `javascript:`).
+  - `useSubmitGuard` + `disabled={isPending}`: por qué hacen falta los dos.
+  - `AssistantResult` como unión discriminada: el `switch (result.tool)` en `AssistantResultTable`.
+- Riesgos o cosas que podrían estar mal:
+  - Si el backend cambia la forma de las filas de una herramienta, la tabla puede romperse en tiempo de ejecución (los tipos son a mano, sin validación en runtime).
+  - No se probó contra la API real en Docker desde esta tarea (solo con el simulador `mockApi`); conviene una prueba manual con `mock` y la semilla limpia.
+  - Con un proveedor real la respuesta puede tardar varios segundos; solo hay "Consultando…", sin botón de cancelar.
