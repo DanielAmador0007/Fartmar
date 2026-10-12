@@ -12,6 +12,12 @@ function ResolveForm({ discrepancy }: { discrepancy: TransferDiscrepancy }) {
   const mutation = useResolveDiscrepancy()
   const guard = useSubmitGuard()
 
+  // Ya resuelta: se retira el formulario de inmediato (sin esperar la recarga de
+  // la lista) para que un segundo clic no reenvíe la resolución.
+  if (mutation.isSuccess) {
+    return <p className="muted">Discrepancia resuelta.</p>
+  }
+
   return (
     <div className="inline-form">
       <label>

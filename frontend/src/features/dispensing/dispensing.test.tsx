@@ -117,6 +117,46 @@ describe('Dispensación', () => {
     expect(second.headers['Idempotency-Key']).toBe(first.headers['Idempotency-Key'])
   })
 
+  it('tras SIN_CONEXION el reintento usa la MISMA Idempotency-Key', async () => {
+    let attempt = 0
+    const api = mockApi(
+      baseRoutes(() => {
+        attempt += 1
+        // El primer envío no obtiene respuesta (pudo o no llegar al servidor).
+        if (attempt === 1) throw new TypeError('Failed to fetch')
+        return { status: 200, body: { data: dispensation() }, headers: { 'Idempotent-Replayed': 'true' } }
+      }),
+    )
+    renderApp('/dispensacion')
+    await userEvent.click(await goToConfirm())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('No hay conexión con el servidor')
+    await userEvent.click(screen.getByRole('button', { name: 'Confirmar dispensación' }))
+    await screen.findByRole('heading', { name: /Dispensación #77/ })
+
+    const [first, second] = api.callsTo('POST', '/dispensations')
+    expect(second.headers['Idempotency-Key']).toBe(first.headers['Idempotency-Key'])
+  })
+
+  it('tras IDEMPOTENCIA_CONFLICTO se genera una clave nueva aunque el formulario no cambie', async () => {
+    let attempt = 0
+    const api = mockApi(
+      baseRoutes(() => {
+        attempt += 1
+        return attempt === 1 ? apiError(409, 'IDEMPOTENCIA_CONFLICTO') : { status: 201, body: { data: dispensation() } }
+      }),
+    )
+    renderApp('/dispensacion')
+    await userEvent.click(await goToConfirm())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('ya se registró antes con datos diferentes')
+    await userEvent.click(screen.getByRole('button', { name: 'Confirmar dispensación' }))
+    await screen.findByRole('heading', { name: /Dispensación #77/ })
+
+    const [first, second] = api.callsTo('POST', '/dispensations')
+    expect(second.headers['Idempotency-Key']).not.toBe(first.headers['Idempotency-Key'])
+  })
+
   it('si cambia la cantidad tras un error, usa una clave nueva', async () => {
     const api = mockApi(baseRoutes(apiError(409, 'STOCK_INSUFICIENTE', 'x', { requested: 20, available: 12 })))
     renderApp('/dispensacion')
