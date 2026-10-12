@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AlertController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CatalogController;
 use App\Http\Controllers\DispensationController;
 use App\Http\Controllers\InventoryAdjustmentController;
 use App\Http\Controllers\KardexController;
@@ -86,6 +87,10 @@ Route::prefix('v1')->group(function (): void {
         Route::get('patients/{patient}/prescriptions', [PatientController::class, 'prescriptions'])
             ->name('patients.prescriptions');
         Route::post('prescriptions', [PrescriptionController::class, 'store'])->name('prescriptions.store');
+
+        // Catálogos de solo lectura (todos los roles activos).
+        Route::get('warehouses', [CatalogController::class, 'warehouses'])->name('warehouses.index');
+        Route::get('products', [CatalogController::class, 'products'])->name('products.index');
 
         // Administración de usuarios (solo admin; sin DELETE, se desactiva).
         Route::get('users', [UserController::class, 'index'])->name('users.index');

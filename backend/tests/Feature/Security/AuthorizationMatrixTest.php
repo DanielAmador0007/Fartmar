@@ -113,6 +113,10 @@ function authorizationEndpoints(): array
             'valid_until' => now()->addDays(10)->toDateString(),
             'items' => [['product_id' => $s->product->id, 'quantity' => 1]],
         ])],
+        // Fase 5: catálogos de solo lectura (todos los roles, S-86).
+        'GET warehouses' => [Role::cases(), fn () => test()->getJson('/api/v1/warehouses')],
+        'GET products' => [Role::cases(), fn () => test()->getJson('/api/v1/products?q=med')],
+
         'GET users' => [[Role::Admin], fn () => test()->getJson('/api/v1/users')],
         'POST users' => [[Role::Admin], fn () => test()->postJson('/api/v1/users', [
             'name' => 'Usuario Matriz', 'email' => 'matriz.'.Str::lower(Str::random(8)).'@fartmar.test',
