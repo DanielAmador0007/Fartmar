@@ -2,7 +2,9 @@
 
 namespace App\Domain\Assistant;
 
+use App\Domain\Assistant\Providers\AnthropicLlmProvider;
 use App\Domain\Assistant\Providers\MockLlmProvider;
+use App\Domain\Assistant\Providers\OllamaLlmProvider;
 use App\Domain\Exceptions\AssistantUnavailableException;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\Log;
@@ -15,6 +17,8 @@ final class LlmProviderFactory
     /** @var array<string, class-string<LlmProvider>> */
     public const PROVIDERS = [
         'mock' => MockLlmProvider::class,
+        'ollama' => OllamaLlmProvider::class,
+        'anthropic' => AnthropicLlmProvider::class,
     ];
 
     public function __construct(private readonly Container $container) {}
