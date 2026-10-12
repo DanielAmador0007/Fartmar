@@ -72,7 +72,7 @@ class DispensationController extends Controller
     /** RN-05: un regente distinto del creador autoriza un controlado. */
     public function authorizeControlled(Request $request, Dispensation $dispensation): DispensationResource
     {
-        Gate::authorize('decide', $dispensation);
+        Gate::authorize('authorize', $dispensation);
 
         $done = $this->service->authorize($dispensation, $this->currentUser($request));
 

@@ -2,8 +2,8 @@
 
 /*
 | GET /api/v1/dispensations: listado paginado con filtros status y
-| warehouse_id. Privacidad (RN-10, S-87): solo el ID del paciente, sin lotes
-| ni motivo de rechazo, y sin escribir en patient_access_logs.
+| warehouse_id. Privacidad (RN-10, S-87): ningún dato del paciente (ni su
+| ID), sin lotes ni motivo de rechazo, y sin escribir en patient_access_logs.
 */
 
 use App\Domain\Dispensing\DispenseService;
@@ -11,6 +11,7 @@ use App\Models\Dispensation;
 use App\Models\PatientAccessLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\DispensingScenario;
@@ -64,7 +65,6 @@ it('filtra por estado PENDIENTE_AUTORIZACION con la forma exacta de la fila', fu
         'id' => $this->pending->id,
         'status' => 'PENDIENTE_AUTORIZACION',
         'requires_authorization' => true,
-        'patient_id' => $s->patient->id,
         'prescription' => ['id' => $s->prescription->id, 'number' => $s->prescription->number],
         'warehouse' => ['id' => $s->warehouse->id, 'code' => $s->warehouse->code, 'name' => $s->warehouse->name],
         'items' => [[
@@ -83,7 +83,76 @@ it('filtra por estado PENDIENTE_AUTORIZACION con la forma exacta de la fila', fu
         'rejected_by' => null,
         'rejected_at' => null,
         'created_at' => $this->pending->created_at->toIso8601String(),
+        // regente2 no la creó: puede autorizarla o rechazarla.
+        'allowed_actions' => ['authorize', 'reject'],
     ]);
+});
+
+it('RN-05: allowed_actions del listado según usuario y estado', function () {
+    $s = $this->controlled;
+    // Controlado pendiente creado por un regente: él no puede decidirlo.
+    $byRegente = app(DispenseService::class)->create($s->regente, $s->data(1), (string) Str::uuid())->dispensation;
+
+    $actionsFor = function (User $user) {
+        Sanctum::actingAs($user);
+
+        return collect($this->getJson('/api/v1/dispensations')->assertOk()->json('data'))
+            ->mapWithKeys(fn (array $row) => [$row['id'] => $row['allowed_actions']]);
+    };
+
+    $regente = $actionsFor($s->regente);
+    expect($regente[$byRegente->id])->toBe([])               // creador regente: nada
+        ->and($regente[$this->pending->id])->toBe(['authorize', 'reject'])
+        ->and($regente[$this->rejected->id])->toBe([])        // RECHAZADA
+        ->and($regente[$this->completed->id])->toBe([]);      // COMPLETADA
+
+    expect($actionsFor($s->regente2)[$byRegente->id])->toBe(['authorize', 'reject']);
+
+    foreach ([$s->auxiliar, User::factory()->auditor()->create()] as $user) {
+        expect($actionsFor($user)->flatten()->all())->toBe([]);
+    }
+});
+
+it('L8: el listado hace un número fijo de consultas, sin importar cuántas filas devuelva (sin N+1)', function () {
+    $service = app(DispenseService::class);
+    Sanctum::actingAs($this->controlled->regente2);
+
+    $countQueries = function (): int {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        $this->getJson('/api/v1/dispensations')->assertOk();
+        DB::disableQueryLog();
+
+        return count(DB::getQueryLog());
+    };
+
+    // Por escenario: otra bodega y otros usuarios; 1 controlado pendiente del
+    // auxiliar, 1 controlado del regente autorizado por regente2 (llena
+    // authorized_by) y 1 más pendiente del auxiliar.
+    $addRows = function () use ($service): void {
+        $s = DispensingScenario::make([[30, 20]], prescribed: 10, controlled: true);
+        $service->create($s->auxiliar, $s->data(1), (string) Str::uuid());
+        $service->authorize($service->create($s->regente, $s->data(1), (string) Str::uuid())->dispensation, $s->regente2);
+        $service->create($s->auxiliar, $s->data(2), (string) Str::uuid());
+    };
+
+    // Ambas mediciones ya tienen filas con authorizer y rejecter: si ninguna
+    // fila tuviera esa FK, Eloquent omitiría la consulta y la cuenta variaría
+    // por eso y no por N+1.
+    $addRows();
+    expect(Dispensation::query()->count())->toBe(6);
+    $withSix = $countQueries();
+
+    foreach (range(1, 4) as $i) {
+        $addRows();
+    }
+    expect(Dispensation::query()->count())->toBe(18);
+    $withEighteen = $countQueries();
+
+    // count + página + prescription, warehouse, items, items.product,
+    // creator, authorizer, rejecter = 9. allowed_actions no consulta nada.
+    expect($withEighteen)->toBe($withSix)
+        ->and($withEighteen)->toBeLessThanOrEqual(9);
 });
 
 it('filtra por estado y bodega combinados', function () {
@@ -132,8 +201,7 @@ it('RN-10: el auditor ve el listado sin datos personales, sin motivo de rechazo 
         ->and($body)->not->toContain($patient->last_name)
         ->and($body)->not->toContain($patient->document_number)
         ->and($body)->not->toContain('Pérez')
-        ->and($response->json('data.1'))->not->toHaveKeys(['rejection_reason', 'patient'])
-        ->and($response->json('data.1.patient_id'))->toBe($patient->id)
+        ->and($response->json('data.1'))->not->toHaveKeys(['rejection_reason', 'patient', 'patient_id'])
         ->and($response->json('data.0.items.0'))->not->toHaveKey('lots')
         ->and(PatientAccessLog::query()->count())->toBe(0);
 });

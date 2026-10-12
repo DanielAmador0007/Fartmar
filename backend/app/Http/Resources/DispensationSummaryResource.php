@@ -10,9 +10,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /**
  * Fila del listado de dispensaciones (S-87).
  *
- * Privacidad (RN-10): igual para todos los roles. Del paciente solo va el ID
- * (sin nombre ni documento), no van los lotes entregados ni el motivo de
- * rechazo (texto libre que podría mencionar al paciente). Por eso el listado
+ * Privacidad (RN-10): igual para todos los roles. No va ningún dato del
+ * paciente (ni siquiera su ID: minimización, el frontend no lo usa), ni los
+ * lotes entregados ni el motivo de rechazo (texto libre que podría
+ * mencionar al paciente). Por eso el listado
  * no escribe en patient_access_logs; el detalle completo se ve en
  * GET /dispensations/{id}, que sí registra el acceso.
  *
@@ -29,7 +30,6 @@ class DispensationSummaryResource extends JsonResource
             'id' => $this->id,
             'status' => $this->status->value,
             'requires_authorization' => $this->requires_authorization,
-            'patient_id' => $this->patient_id,
             'prescription' => [
                 'id' => $this->prescription->id,
                 'number' => $this->prescription->number,
@@ -51,6 +51,8 @@ class DispensationSummaryResource extends JsonResource
             'rejected_by' => $this->rejecter ? new UserSummaryResource($this->rejecter) : null,
             'rejected_at' => $this->rejected_at?->toIso8601String(),
             'created_at' => $this->created_at->toIso8601String(),
+            // Misma regla que el detalle; sin consultas extra (solo status y created_by).
+            'allowed_actions' => DispensationResource::allowedActions($request, $this->resource),
         ];
     }
 }
