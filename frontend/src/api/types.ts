@@ -54,6 +54,17 @@ export interface ProductSummary {
   is_controlled?: boolean
 }
 
+// GET /products (S-86)
+export interface Product {
+  id: number
+  code: string
+  name: string
+  presentation: string
+  unit: string
+  is_controlled: boolean
+  stock_minimums: { warehouse_id: number; min_quantity: number }[]
+}
+
 export interface LotSummary {
   id: number
   lot_number: string
@@ -145,6 +156,17 @@ export interface Dispensation {
   rejected_at: string | null
   rejection_reason: string | null
   created_at: string
+}
+
+// Fila de GET /dispensations (S-87): sin datos del paciente, sin lotes ni motivo de rechazo.
+export type DispensationSummary = Omit<Dispensation, 'items' | 'rejection_reason'> & {
+  items: { id: number; product: ProductSummary & { is_controlled: boolean }; quantity: number }[]
+}
+
+export interface PrescriptionRequest {
+  patient_id: number
+  valid_until: string
+  items: { product_id: number; quantity: number; instructions: string | null }[]
 }
 
 // --- Inventario ---

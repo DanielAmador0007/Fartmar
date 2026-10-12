@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import { apiError, mockApi, type MockReply } from '../../test/http'
-import { catalogStocks, dispensation, fefoPreview, morfina, patient, prescription } from '../../test/fixtures'
+import { catalogRoutes, dispensation, fefoPreview, morfina, patient, prescription } from '../../test/fixtures'
 import { makeUser, meRoute, renderApp } from '../../test/render'
 
 function baseRoutes(dispenseHandler: MockReply | (() => MockReply | Promise<MockReply>)) {
@@ -10,7 +10,7 @@ function baseRoutes(dispenseHandler: MockReply | (() => MockReply | Promise<Mock
     ...meRoute(makeUser('auxiliar_farmacia')),
     'POST /patients/search': { body: { data: [patient] } },
     'GET /patients/1/prescriptions': { body: { data: [prescription()] } },
-    'GET /stocks': { body: catalogStocks },
+    ...catalogRoutes,
     'GET /dispensations/preview': { body: { data: fefoPreview } },
     'POST /dispensations': dispenseHandler,
   }

@@ -1,5 +1,5 @@
 // Datos SINTÉTICOS para pruebas.
-import type { Dispensation, FefoPreview, Patient, Prescription, Stock, Transfer } from '../api/types'
+import type { Dispensation, FefoPreview, Patient, Prescription, Product, Stock, Transfer } from '../api/types'
 
 export const warehouse = { id: 1, code: 'FAR-CEN', name: 'Farmacia Central' }
 export const warehouse2 = { id: 2, code: 'FAR-URG', name: 'Farmacia Urgencias' }
@@ -63,7 +63,19 @@ export function stock(id: number, overrides: Partial<Stock> = {}): Stock {
   }
 }
 
-export const catalogStocks = { data: [stock(1), stock(2, { warehouse: warehouse2 })], meta: { current_page: 1, last_page: 1, per_page: 100, total: 2 } }
+export function page<T>(data: T[]) {
+  return { body: { data, meta: { current_page: 1, last_page: 1, per_page: 100, total: data.length } } }
+}
+
+export function product(base: { id: number; code: string; name: string; is_controlled: boolean }): Product {
+  return { ...base, presentation: 'Tableta', unit: 'tableta', stock_minimums: [] }
+}
+
+// Rutas de catálogo (GET /warehouses y GET /products, S-86) para mockApi.
+export const catalogRoutes = {
+  'GET /warehouses': page([warehouse, warehouse2]),
+  'GET /products': page([product(acetaminofen), product(morfina)]),
+}
 
 export const fefoPreview: FefoPreview = {
   warehouse_id: 1,

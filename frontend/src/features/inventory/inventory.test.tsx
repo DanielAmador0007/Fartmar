@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 import type { Alerts } from '../../api/types'
 import { mockApi, type MockReply } from '../../test/http'
-import { acetaminofen, stock, warehouse } from '../../test/fixtures'
+import { acetaminofen, catalogRoutes, stock, warehouse } from '../../test/fixtures'
 import { makeUser, meRoute, renderApp } from '../../test/render'
 import { expiryLevel } from './expiry'
 
@@ -39,6 +39,7 @@ const stocks = [
 function routes(role: 'auditor' | 'regente_farmacia', extra: Record<string, MockReply | (() => MockReply)> = {}) {
   return {
     ...meRoute(makeUser(role)),
+    ...catalogRoutes,
     'GET /stocks': page(stocks),
     'GET /alerts': { body: { data: alerts } },
     'GET /stocks/in-transit': page([]),
@@ -72,6 +73,21 @@ describe('Inventario', () => {
     expect(panel.getByText(/vencido hace 10 días/)).toBeInTheDocument()
     expect(panel.getByText(/disponible 80 de mínimo 500/)).toBeInTheDocument()
     expect(screen.getByText('No hay unidades en tránsito.')).toBeInTheDocument()
+  })
+
+  it('los filtros usan el catálogo de GET /warehouses y GET /products, no /stocks', async () => {
+    const api = mockApi(routes('auditor'))
+    renderApp('/inventario')
+
+    const select = await screen.findByLabelText('Bodega')
+    await waitFor(() => expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'Todas',
+      'Farmacia Central (FAR-CEN)',
+      'Farmacia Urgencias (FAR-URG)',
+    ]))
+    expect(within(screen.getByLabelText('Producto')).getAllByRole('option')).toHaveLength(3)
+    expect(api.callsTo('GET', '/warehouses')[0].query.get('per_page')).toBe('100')
+    expect(api.callsTo('GET', '/stocks').every((c) => !c.query.has('include_empty'))).toBe(true)
   })
 
   it('el auditor no ve el formulario de ajuste', async () => {

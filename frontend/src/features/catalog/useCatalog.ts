@@ -1,36 +1,43 @@
-// Bodegas y productos para los selectores.
-//
-// La API no tiene endpoints de catálogo (GET /warehouses, GET /products):
-// se derivan de GET /stocks?include_empty=true (S-80). Limitación: un
-// producto sin ninguna existencia registrada en ninguna bodega no aparece.
-// Solo pueden usarlo los roles con acceso a /stocks (farmacia y auditor).
+// Catálogos de solo lectura: GET /warehouses y GET /products (S-86).
+// Disponibles para todos los roles. Son pocos registros: se cargan completos
+// (hasta MAX_PAGES páginas de 100) y se guardan 5 minutos en caché.
 import { useQuery } from '@tanstack/react-query'
 import { apiRequest } from '../../api/client'
-import type { Paginated, ProductSummary, Stock, WarehouseSummary } from '../../api/types'
+import type { Paginated, Product, WarehouseSummary } from '../../api/types'
 
 const MAX_PAGES = 10
 
 export interface Catalog {
   warehouses: WarehouseSummary[]
-  products: ProductSummary[]
+  products: Product[]
+}
+
+async function fetchAll<T>(path: string): Promise<T[]> {
+  const rows: T[] = []
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const result = await apiRequest<Paginated<T>>(path, { query: { per_page: 100, page } })
+    rows.push(...result.data)
+    if (page >= result.meta.last_page) break
+  }
+  return rows
 }
 
 async function fetchCatalog(): Promise<Catalog> {
-  const warehouses = new Map<number, WarehouseSummary>()
-  const products = new Map<number, ProductSummary>()
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    const result = await apiRequest<Paginated<Stock>>('/stocks', { query: { include_empty: 1, per_page: 100, page } })
-    for (const stock of result.data) {
-      warehouses.set(stock.warehouse.id, stock.warehouse)
-      products.set(stock.product.id, stock.product)
-    }
-    if (page >= result.meta.last_page) break
-  }
-
-  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, 'es')
-  return { warehouses: [...warehouses.values()].sort(byName), products: [...products.values()].sort(byName) }
+  const [warehouses, products] = await Promise.all([fetchAll<WarehouseSummary>('/warehouses'), fetchAll<Product>('/products')])
+  return { warehouses, products }
 }
 
 export function useCatalog() {
   return useQuery({ queryKey: ['catalog'], queryFn: fetchCatalog, staleTime: 5 * 60_000 })
+}
+
+// Búsqueda de productos por nombre o código (para prescribir).
+export function useProductSearch(q: string) {
+  const term = q.trim()
+  return useQuery({
+    queryKey: ['products', 'search', term],
+    queryFn: () => apiRequest<Paginated<Product>>('/products', { query: { q: term, per_page: 20 } }).then((r) => r.data),
+    enabled: term.length >= 2,
+    staleTime: 60_000,
+  })
 }
