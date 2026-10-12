@@ -58,6 +58,8 @@ final class GetStockTool extends AssistantTool
             'per_page' => self::MAX_ROWS,
         ]);
 
+        $totals = $this->inventory->totals(['warehouse_id' => $warehouse?->id, 'product_id' => $product?->id]);
+
         $rows = collect($stocks->items())->map(fn (Stock $stock) => [
             'warehouse' => self::warehouseRef($stock->warehouse),
             'product' => self::productRef($stock->product),
@@ -72,8 +74,9 @@ final class GetStockTool extends AssistantTool
             'filters' => ['product' => self::productRef($product), 'warehouse' => self::warehouseRef($warehouse)],
             'count' => $stocks->total(),
             'truncated' => $stocks->total() > count($rows),
-            'total_quantity' => array_sum(array_column($rows, 'quantity')),
-            'available_quantity' => array_sum(array_map(fn (array $r) => $r['is_expired'] ? 0 : $r['quantity'], $rows)),
+            // Sobre TODAS las existencias del filtro, aunque las filas estén recortadas.
+            'total_quantity' => $totals['total'],
+            'available_quantity' => $totals['available'],
             'rows' => $rows,
         ];
     }
