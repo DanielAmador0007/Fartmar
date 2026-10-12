@@ -194,7 +194,7 @@ it('por API: proveedor externo caído -> 503 ASISTENTE_NO_DISPONIBLE y el log no
     $this->postJson('/api/v1/assistant/query', ['question' => '¿Cuánto stock de morfina hay?'])
         ->assertStatus(503)
         ->assertJsonPath('error.code', 'ASISTENTE_NO_DISPONIBLE')
-        ->assertJsonPath('error.details.provider', 'anthropic');
+        ->assertJsonPath('error.details', []);
 
     expect($logs->output())->toContain('assistant.provider_error')
         ->not->toContain('sk-ant-prueba-secreta')

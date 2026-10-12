@@ -121,9 +121,11 @@ final class AssistantService
     }
 
     /**
-     * Serializa el resultado como DATO para el modelo. JSON_HEX_TAG convierte
-     * < y > en < y >: un texto malicioso no puede cerrar la
-     * etiqueta y "salirse" del bloque de datos.
+     * Serializa el resultado como DATO para el modelo. Con JSON_HEX_TAG, los
+     * caracteres "menor que" y "mayor que" dentro de los textos se escriben
+     * como escapes unicode de JSON (barra invertida, u, 003C y 003E), así que
+     * un texto malicioso no puede escribir la etiqueta de cierre y "salirse"
+     * del bloque de datos. Al decodificar el JSON vuelven a ser < y >.
      */
     public static function wrapToolResult(string $name, ToolResult $result): string
     {

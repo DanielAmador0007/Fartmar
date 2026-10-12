@@ -178,6 +178,25 @@ it('redacta claves sensibles en cualquier nivel, modelos completos, correos y nÃ
     expect($logs->output())->not->toContain('Rosalba')->not->toContain('1098765432');
 });
 
+it('redacta la pregunta, la respuesta y los mensajes del asistente IA si alguien los loguea', function () {
+    $logs = LogCapture::start();
+
+    Log::info('assistant.debug', [
+        'question' => 'stock para Rosalba',
+        'answer' => 'Rosalba tiene...',
+        'messages' => [['role' => 'user', 'content' => 'Rosalba']],
+        'prompt' => 'Eres el asistente...',
+        'provider' => 'mock',
+    ]);
+
+    $context = $logs->records()[0]->context;
+    foreach (['question', 'answer', 'messages', 'prompt'] as $key) {
+        expect($context[$key])->toBe(RedactSensitiveData::REDACTED);
+    }
+    expect($context['provider'])->toBe('mock')
+        ->and($logs->output())->not->toContain('Rosalba');
+});
+
 it('una dispensaciÃ³n no deja el nombre ni el documento del paciente en los logs (ni en las consultas SQL registradas)', function () {
     $s = DispensingScenario::make([[30, 10]], prescribed: 5);
     $s->patient->update(['first_name' => 'Hermenegilda', 'last_name' => 'Ficticio Zuluaga', 'document_number' => '5550001112']);

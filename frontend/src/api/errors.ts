@@ -118,7 +118,7 @@ export function errorMessage(error: unknown, context: ErrorContext = {}): string
     case 'OPERACION_NO_PERMITIDA':
       return 'No puedes desactivarte ni quitarte el rol de administrador a ti mismo.'
     case 'ASISTENTE_NO_DISPONIBLE':
-      // details.provider no se muestra: es un dato técnico, no ayuda al usuario.
+      // El backend no envía details (el proveedor solo queda en el log).
       return 'El asistente no está disponible en este momento. Intenta más tarde; el resto del sistema funciona con normalidad.'
     case 'CAMBIO_CLAVE_REQUERIDO':
       return 'Debes cambiar tu contraseña temporal antes de continuar.'

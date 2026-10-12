@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.6.0
+  version: 0.6.1
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
@@ -972,7 +972,7 @@ paths:
         '422': { $ref: '#/components/responses/ValidationError' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503':
-          description: '`ASISTENTE_NO_DISPONIBLE`: el proveedor del modelo no respondió, falló o no está configurado (`details.provider`). Sin detalles técnicos.'
+          description: '`ASISTENTE_NO_DISPONIBLE`: el proveedor del modelo no respondió, falló o no está configurado. `details` vacío: sin detalles técnicos ni nombre del proveedor (queda en el log).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

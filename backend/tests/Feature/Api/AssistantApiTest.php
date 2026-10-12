@@ -117,7 +117,7 @@ it('si el proveedor no está disponible responde 503 ASISTENTE_NO_DISPONIBLE sin
     $this->postJson('/api/v1/assistant/query', ['question' => '¿Cuánto stock hay?'])
         ->assertStatus(503)
         ->assertJsonPath('error.code', 'ASISTENTE_NO_DISPONIBLE')
-        ->assertJsonPath('error.details', ['provider' => 'roto']);
+        ->assertJsonPath('error.details', []);
 });
 
 it('un LLM_PROVIDER desconocido responde 503, no 500', function () {
