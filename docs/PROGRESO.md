@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-11, al cerrar la Fase 4.
+> Última actualización: 2026-10-11, al cerrar la Fase 5.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -26,8 +26,8 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR #1, mergeado) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
 | 3 Traslados, ajustes, alertas | ✅ Hecha (PR #2, mergeado) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
 | 4 Seguridad y privacidad | ✅ Hecha (PR `feat/fase-4-seguridad`) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
-| 5 Frontend | ⏭️ **Siguiente** | frontend-react; ver "Lo que las fases siguientes deben saber de la Fase 4" |
-| 6 Asistente IA | Pendiente | |
+| 5 Frontend | ✅ Hecha (PR `feat/fase-5-frontend`, apilada sobre la Fase 4) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
+| 6 Asistente IA | ⏭️ **Siguiente** | ia-asistente; ver "Lo que las fases siguientes deben saber de la Fase 5" |
 | 7 DevOps completo | Pendiente | |
 | 8 Documentación y cierre | Pendiente | |
 
@@ -48,6 +48,24 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+
+## Lo que las fases siguientes deben saber de la Fase 5
+
+- Frontend en `frontend/src`: `api/` (cliente único, `errors.ts` mapea códigos a español y muestra el correlation id),
+  `auth/` (sesión, `permissions.ts` solo para menú/rutas), `features/<módulo>/`. `api/types.ts` se mantiene a mano
+  contra `docs/openapi.yaml` (0.5.1).
+- Token en `sessionStorage` (S-82); datos de paciente solo en memoria. Idempotency-Key por intento (S-83), con
+  respaldo si no hay `crypto.randomUUID`.
+- **Asistente IA (Fase 6):** falta la pantalla del asistente en el frontend; agregarla en `features/assistant/` y en
+  el menú (`auth/permissions.ts`).
+- **DevOps (Fase 7):** el frontend corre en el host con el proxy de Vite (`/api` → 8080). Para la imagen de
+  producción: build estático servido por Nginx con el proxy `/api`; `crypto.randomUUID` requiere HTTPS o localhost
+  (hay respaldo, pero conviene servir por HTTPS).
+- Bajos abiertos de la revisión: catálogo cortado en 1000 filas (L3), ajustes solo sobre la página visible (L4),
+  discrepancias sin paginación (L6). Los commits iniciales de la Fase 5 (`aa28ea7`…`e698d5c`) no compilan por sí solos
+  (importan `auth/` antes de crearlo); los posteriores sí.
+- Cambio de comportamiento: el creador que intenta autorizar/rechazar recibe 403 `SEGREGACION_FUNCIONES` (Policy)
+  antes que 409.
 
 ## Lo que las fases siguientes deben saber de la Fase 4
 
