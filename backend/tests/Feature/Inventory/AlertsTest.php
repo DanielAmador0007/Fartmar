@@ -190,3 +190,38 @@ it('RN-11: "hoy" de las alertas es el día de Bogotá, no el de UTC (S-13)', fun
     $this->travelTo(CarbonImmutable::parse('2026-10-12 05:00:00', 'UTC'));
     expect(array_map(fn ($a) => [$a->daysToExpire, $a->isExpired()], app(AlertService::class)->expiringLots()))->toBe([[-1, true]]);
 });
+
+it('lotsExpiringWithin: solo lotes no vencidos con unidades dentro de la ventana, filtrables por bodega y producto', function () {
+    $s = TransferScenario::make([
+        [-1, 3],   // vencido: no entra
+        [0, 2],    // vence hoy: entra
+        [60, 4],   // justo en el límite de 60: entra
+        [61, 6],   // fuera
+    ]);
+    [, $today, $limit] = $s->lots;
+    $other = Product::factory()->create();
+    $otherLot = $s->addLot($other, 10, 5);
+    $inDestination = $s->addLot($s->product, 5, 1, $s->destination);
+
+    $service = app(AlertService::class);
+    $ids = fn (array $alerts) => array_map(fn ($a) => $a->stock->lot_id, $alerts);
+
+    expect($ids($service->lotsExpiringWithin(60, $s->origin->id, $s->product->id)))->toBe([$today->id, $limit->id])
+        ->and($ids($service->lotsExpiringWithin(60, $s->origin->id)))->toBe([$today->id, $otherLot->id, $limit->id])
+        ->and($ids($service->lotsExpiringWithin(60, null, $s->product->id)))->toBe([$today->id, $inDestination->id, $limit->id])
+        ->and($ids($service->lotsExpiringWithin(1, $s->origin->id, $s->product->id)))->toBe([$today->id]);
+});
+
+it('expiredLots: solo lotes vencidos con unidades', function () {
+    $s = TransferScenario::make([[-10, 3], [-1, 2], [0, 4]]);
+    [$old, $yesterday] = $s->lots;
+    $emptyExpired = $s->addLot($s->product, -3, 1);
+    app(AdjustmentService::class)->adjust($s->regente, $s->origin->id, $emptyExpired->id, -1, 'Baja por vencimiento');
+
+    $alerts = app(AlertService::class)->expiredLots($s->origin->id, $s->product->id);
+
+    expect(array_map(fn ($a) => [$a->stock->lot_id, $a->daysToExpire, $a->isExpired()], $alerts))->toBe([
+        [$old->id, -10, true],
+        [$yesterday->id, -1, true],
+    ]);
+});
