@@ -12,7 +12,19 @@ export interface IdempotencyTracker {
   reset: () => void
 }
 
-export function createIdempotencyTracker(generate: () => string = () => crypto.randomUUID()): IdempotencyTracker {
+// UUID v4. crypto.randomUUID solo existe en contextos seguros (HTTPS o
+// localhost); si se abre por http://IP en la red de la farmacia no está,
+// y se arma con crypto.getRandomValues (disponible siempre).
+export function newUuid(cryptoImpl: Pick<Crypto, 'getRandomValues'> & { randomUUID?: () => string } = crypto): string {
+  if (typeof cryptoImpl.randomUUID === 'function') return cryptoImpl.randomUUID()
+  const bytes = cryptoImpl.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // versión 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variante RFC 4122
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
+}
+
+export function createIdempotencyTracker(generate: () => string = () => newUuid()): IdempotencyTracker {
   let current: { key: string; fingerprint: string } | null = null
   return {
     keyFor(payload) {
