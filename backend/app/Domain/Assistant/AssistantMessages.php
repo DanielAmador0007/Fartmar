@@ -19,5 +19,7 @@ final class AssistantMessages
 
     public const OUTPUT_BLOCKED = 'No puedo mostrar esa respuesta porque incluía información fuera de mi alcance. Solo puedo responder consultas de inventario, lotes, vencimientos, stock mínimo y traslados.';
 
+    public const INCOMPLETE = 'La respuesta del modelo quedó incompleta. Intente con una pregunta más concreta (por ejemplo, producto y bodega).';
+
     public const TOO_MANY_STEPS = 'No pude completar la consulta en el número de pasos permitido. Intente con una pregunta más concreta (por ejemplo, producto y bodega).';
 }

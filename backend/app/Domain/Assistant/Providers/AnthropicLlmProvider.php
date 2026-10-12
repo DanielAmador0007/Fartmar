@@ -2,8 +2,10 @@
 
 namespace App\Domain\Assistant\Providers;
 
+use App\Domain\Assistant\AssistantMessages;
 use App\Domain\Assistant\LlmResponse;
 use App\Domain\Assistant\ToolCall;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Modelo externo de Anthropic (LLM_PROVIDER=anthropic): Messages API con
@@ -53,6 +55,14 @@ final class AnthropicLlmProvider extends HttpLlmProvider
             $this->fail(null, 'unexpected_format');
         }
 
+        // Cortada por max_tokens: el texto o un tool_use pueden venir a medias.
+        // No se ejecuta nada y se responde un mensaje seguro.
+        if (($json['stop_reason'] ?? null) === 'max_tokens') {
+            Log::warning('assistant.incomplete_response', ['provider' => $this->name()]);
+
+            return LlmResponse::text(AssistantMessages::INCOMPLETE);
+        }
+
         $text = '';
         $calls = [];
         foreach ($json['content'] as $block) {
@@ -86,6 +96,9 @@ final class AnthropicLlmProvider extends HttpLlmProvider
 
             if ($message['role'] === 'tool') {
                 $block = ['type' => 'tool_result', 'tool_use_id' => $message['tool_call_id'], 'content' => $message['content']];
+                if ($message['is_error'] ?? false) {
+                    $block['is_error'] = true;
+                }
                 $last = array_key_last($result);
 
                 if ($last !== null && $result[$last]['role'] === 'user' && is_array($result[$last]['content'])) {

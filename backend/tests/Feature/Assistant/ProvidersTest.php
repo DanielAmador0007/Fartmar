@@ -5,6 +5,7 @@
 | formato del request, parseo de tool calls y fallas -> 503.
 */
 
+use App\Domain\Assistant\AssistantMessages;
 use App\Domain\Assistant\AssistantService;
 use App\Domain\Assistant\LlmProviderFactory;
 use App\Domain\Assistant\Providers\AnthropicLlmProvider;
@@ -12,9 +13,14 @@ use App\Domain\Assistant\Providers\OllamaLlmProvider;
 use App\Domain\Exceptions\AssistantUnavailableException;
 use App\Models\User;
 use Database\Seeders\DatabaseSeeder;
+use GuzzleHttp\Exception\TransferException;
+use GuzzleHttp\Psr7\Request as Psr7Request;
+use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\LogCapture;
@@ -126,6 +132,33 @@ it('Anthropic: Messages API con llave, system aparte, tool_use y tool_result enl
     expect($second->body())->toContain('"input":{}');
 });
 
+it('Anthropic: un resultado de herramienta rechazado viaja con is_error', function () {
+    Http::fake(['api.anthropic.test/*' => Http::sequence()
+        ->push(['content' => [['type' => 'tool_use', 'id' => 'toolu_09', 'name' => 'run_sql', 'input' => ['sql' => 'x']]], 'stop_reason' => 'tool_use'])
+        ->push(['content' => [['type' => 'text', 'text' => 'No puedo.']], 'stop_reason' => 'end_turn']),
+    ]);
+
+    app()->make(AssistantService::class, ['provider' => new AnthropicLlmProvider])->ask($this->user, '¿Cuánto stock hay?');
+
+    $block = Http::recorded()[1][0]['messages'][2]['content'][0];
+    expect($block['type'])->toBe('tool_result')
+        ->and($block['tool_use_id'])->toBe('toolu_09')
+        ->and($block['is_error'])->toBeTrue();
+});
+
+it('Anthropic: stop_reason max_tokens -> respuesta segura sin ejecutar herramientas a medias', function () {
+    Http::fake(['api.anthropic.test/*' => Http::response(['content' => [
+        ['type' => 'text', 'text' => 'Los lotes son L-ACE'],
+        ['type' => 'tool_use', 'id' => 'toolu_10', 'name' => 'get_stock', 'input' => (object) []],
+    ], 'stop_reason' => 'max_tokens'])]);
+
+    $answer = app()->make(AssistantService::class, ['provider' => new AnthropicLlmProvider])->ask($this->user, '¿Cuánto stock hay?');
+
+    expect($answer->answer)->toBe(AssistantMessages::INCOMPLETE)
+        ->and($answer->toolsUsed)->toBe([]);
+    Http::assertSentCount(1);
+});
+
 it('Anthropic sin LLM_API_KEY: 503 sin llamar a la red', function () {
     config(['assistant.anthropic.api_key' => null]);
     Http::fake();
@@ -148,6 +181,8 @@ it('error de red, timeout o respuesta no 2xx -> AssistantUnavailableException', 
     'anthropic sin conexión' => ['anthropic', fn () => throw new ConnectionException('timeout')],
     'anthropic 401' => ['anthropic', fn () => Http::response(['error' => ['message' => 'invalid x-api-key']], 401)],
     'anthropic 529' => ['anthropic', fn () => Http::response(['error' => ['type' => 'overloaded_error']], 529)],
+    'ollama RequestException' => ['ollama', fn () => throw new RequestException(new Response(new Psr7Response(500)))],
+    'anthropic falla de Guzzle' => ['anthropic', fn () => throw new TransferException('stream error', new Psr7Request('POST', 'https://api.anthropic.test/v1/messages'))],
 ]);
 
 it('por API: proveedor externo caído -> 503 ASISTENTE_NO_DISPONIBLE y el log no trae la llave ni la pregunta', function () {

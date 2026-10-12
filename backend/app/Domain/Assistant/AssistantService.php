@@ -111,6 +111,7 @@ final class AssistantService
                     'role' => 'tool',
                     'tool_call_id' => $call->id,
                     'name' => $call->name,
+                    'is_error' => ! $toolResult->ok,
                     'content' => self::wrapToolResult($call->name, $toolResult),
                 ];
             }

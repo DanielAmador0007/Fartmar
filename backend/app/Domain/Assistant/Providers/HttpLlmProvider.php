@@ -4,7 +4,8 @@ namespace App\Domain\Assistant\Providers;
 
 use App\Domain\Assistant\LlmProvider;
 use App\Domain\Exceptions\AssistantUnavailableException;
-use Illuminate\Http\Client\ConnectionException;
+use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Http\Client\HttpClientException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -28,7 +29,8 @@ abstract class HttpLlmProvider implements LlmProvider
     {
         try {
             $response = $this->request()->withHeaders($headers)->post($url, $body);
-        } catch (ConnectionException $e) {
+        } catch (HttpClientException|GuzzleException $e) {
+            // Sin conexión, timeout, RequestException u otra falla del cliente HTTP.
             $this->fail(null, $e::class);
         }
 
