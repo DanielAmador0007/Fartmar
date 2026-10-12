@@ -19,17 +19,21 @@ const usersApi = {
     apiRequest<DataEnvelope<User>>(`/users/${id}`, { method: 'PATCH', body }).then((r) => r.data),
 }
 
-function useUserMutations() {
+function useCreateUser() {
   const queryClient = useQueryClient()
-  const onSuccess = () => queryClient.invalidateQueries({ queryKey: ['users'] })
-  return {
-    create: useMutation({ mutationFn: usersApi.create, onSuccess }),
-    update: useMutation({ mutationFn: ({ id, body }: { id: number; body: UserPatch }) => usersApi.update(id, body), onSuccess }),
-  }
+  return useMutation({ mutationFn: usersApi.create, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }) })
+}
+
+function useUpdateUser(id: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: UserPatch) => usersApi.update(id, body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  })
 }
 
 function CreateUserForm() {
-  const { create } = useUserMutations()
+  const create = useCreateUser()
   const guard = useSubmitGuard()
   const [form, setForm] = useState({ name: '', email: '', password: '', role: 'auxiliar_farmacia' as Role })
 
@@ -74,25 +78,97 @@ function CreateUserForm() {
   )
 }
 
+// Una fila con su propia mutación: el estado "guardando" y el error son de ese usuario.
+// El rol se cambia con "Guardar rol" (cambiar el rol revoca los tokens del usuario).
+function UserRow({ user, isMe }: { user: User; isMe: boolean }) {
+  const update = useUpdateUser(user.id)
+  const guard = useSubmitGuard()
+  const [role, setRole] = useState<Role>(user.role)
+  const [resetting, setResetting] = useState(false)
+  const [tempPassword, setTempPassword] = useState('')
+  const busy = update.isPending
+
+  const patch = (body: UserPatch, onSuccess?: () => void) => void guard(() => update.mutateAsync(body).then(onSuccess))
+
+  return (
+    <tr>
+      <td>
+        {user.name} {user.must_change_password && <span className="badge badge-amber">Clave temporal</span>}
+      </td>
+      <td>{user.email}</td>
+      <td>
+        <select aria-label={`Rol de ${user.name}`} value={role} disabled={busy || isMe} onChange={(e) => setRole(e.target.value as Role)}>
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {ROLE_LABELS[r]}
+            </option>
+          ))}
+        </select>
+        {role !== user.role && (
+          <>
+            <button type="button" disabled={busy} onClick={() => patch({ role })}>
+              Guardar rol
+            </button>
+            <button type="button" disabled={busy} onClick={() => setRole(user.role)}>
+              Descartar
+            </button>
+          </>
+        )}
+      </td>
+      <td>{user.is_active ? 'Activo' : 'Inactivo'}</td>
+      <td>
+        <div className="actions">
+          <button type="button" disabled={busy || isMe} onClick={() => patch({ is_active: !user.is_active })}>
+            {user.is_active ? 'Desactivar' : 'Activar'}
+          </button>
+          {resetting ? (
+            <>
+              <input
+                type="password"
+                autoComplete="new-password"
+                aria-label={`Nueva contraseña temporal de ${user.name}`}
+                minLength={12}
+                value={tempPassword}
+                onChange={(e) => setTempPassword(e.target.value)}
+              />
+              <button
+                type="button"
+                disabled={busy || tempPassword.length < 12}
+                onClick={() =>
+                  // Se limpia solo si la API aceptó la clave; si falla, el admin puede corregirla.
+                  patch({ password: tempPassword }, () => {
+                    setResetting(false)
+                    setTempPassword('')
+                  })
+                }
+              >
+                Guardar clave
+              </button>
+            </>
+          ) : (
+            <button type="button" onClick={() => setResetting(true)}>
+              Restablecer clave
+            </button>
+          )}
+        </div>
+        <ErrorAlert error={update.error} action="modificar usuarios" />
+      </td>
+    </tr>
+  )
+}
+
 export function UsersPage() {
   const me = useCurrentUser()
   const [page, setPage] = useState(1)
   const list = useQuery({ queryKey: ['users', page], queryFn: () => usersApi.list(page) })
-  const { update } = useUserMutations()
-  const guard = useSubmitGuard()
-  const [resetFor, setResetFor] = useState<number | null>(null)
-  const [tempPassword, setTempPassword] = useState('')
-
-  const patch = (id: number, body: UserPatch) => void guard(() => update.mutateAsync({ id, body }))
 
   return (
     <>
       <h1>Usuarios</h1>
       <CreateUserForm />
-      <section className="card">
+      <section className="card" aria-label="Usuarios">
         {list.isPending && <Loading />}
         <ErrorAlert error={list.error} action="ver usuarios" />
-        <ErrorAlert error={update.error} action="modificar usuarios" />
         {list.data && (
           <table>
             <thead>
@@ -106,59 +182,8 @@ export function UsersPage() {
             </thead>
             <tbody>
               {list.data.data.map((u) => (
-                <tr key={u.id}>
-                  <td>
-                    {u.name} {u.must_change_password && <span className="badge badge-amber">Clave temporal</span>}
-                  </td>
-                  <td>{u.email}</td>
-                  <td>
-                    <select
-                      aria-label={`Rol de ${u.name}`}
-                      value={u.role}
-                      disabled={update.isPending || u.id === me.id}
-                      onChange={(e) => patch(u.id, { role: e.target.value as Role })}
-                    >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {ROLE_LABELS[r]}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td>{u.is_active ? 'Activo' : 'Inactivo'}</td>
-                  <td className="actions">
-                    <button type="button" disabled={update.isPending || u.id === me.id} onClick={() => patch(u.id, { is_active: !u.is_active })}>
-                      {u.is_active ? 'Desactivar' : 'Activar'}
-                    </button>
-                    {resetFor === u.id ? (
-                      <>
-                        <input
-                          type="password"
-                          autoComplete="new-password"
-                          aria-label="Nueva contraseña temporal"
-                          minLength={12}
-                          value={tempPassword}
-                          onChange={(e) => setTempPassword(e.target.value)}
-                        />
-                        <button
-                          type="button"
-                          disabled={update.isPending || tempPassword.length < 12}
-                          onClick={() => {
-                            patch(u.id, { password: tempPassword })
-                            setResetFor(null)
-                            setTempPassword('')
-                          }}
-                        >
-                          Guardar clave
-                        </button>
-                      </>
-                    ) : (
-                      <button type="button" onClick={() => setResetFor(u.id)}>
-                        Restablecer clave
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                // key con el rol: tras guardar, la fila arranca con el rol nuevo.
+                <UserRow key={`${u.id}-${u.role}`} user={u} isMe={u.id === me.id} />
               ))}
             </tbody>
           </table>
