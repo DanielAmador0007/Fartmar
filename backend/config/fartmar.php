@@ -21,4 +21,13 @@ return [
     // (S-47). Frena scripts o clientes en bucle sin afectar el uso normal.
     'api_rate_limit_per_minute' => (int) env('API_RATE_LIMIT_PER_MINUTE', 120),
 
+    // Rol de BD con el que corre la app en producción (no dueño de las
+    // tablas, sin TRUNCATE). Lo crea `php artisan db:provision-app-role`
+    // tras las migraciones (S-101). Vacío = la app usa el usuario dueño
+    // (desarrollo y pruebas).
+    'db_app_role' => [
+        'username' => env('DB_APP_USERNAME'),
+        'password' => env('DB_APP_PASSWORD'),
+    ],
+
 ];
