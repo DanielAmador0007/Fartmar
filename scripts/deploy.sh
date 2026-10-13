@@ -13,6 +13,11 @@
 #      servicio one-shot migrate, antes de cambiar la API
 #   5. recrear api, scheduler y web con las imágenes nuevas y esperar healthy
 #   6. smoke test; si falla, rollback = volver a correr este script con el SHA anterior
+#
+# En "production" aborta si la configuración es de demo (SEED_DEMO_DATA=true,
+# ALLOW_GENERATED_KEYS=true) o faltan APP_KEY / PATIENT_HASH_KEY, y el smoke
+# test corre sin escrituras demo (SMOKE_DEMO_CHECKS=false) con SMOKE_EMAIL y
+# SMOKE_PASSWORD, que son secretos del environment.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -43,14 +48,35 @@ echo "[deploy] API: ${API_IMAGE}"
 echo "[deploy] Web: ${WEB_IMAGE}"
 
 # 1. Siempre se ejecuta (también en simulado): falla si falta una variable obligatoria.
-docker compose config --quiet
+rendered="$(docker compose config)"
 echo "[deploy] docker compose config OK"
+
+smoke_demo="true"
+if [ "$environment" = "production" ]; then
+    problems=""
+    for flag in SEED_DEMO_DATA ALLOW_GENERATED_KEYS; do
+        if grep -Eq "^ +${flag}: \"?true\"?$" <<< "$rendered"; then
+            problems="${problems} ${flag}=true"
+        fi
+    done
+    for key in APP_KEY PATIENT_HASH_KEY; do
+        if grep -Eq "^ +${key}: \"?\"?$" <<< "$rendered"; then
+            problems="${problems} ${key}-vacía"
+        fi
+    done
+    if [ -n "$problems" ]; then
+        echo "[deploy] ABORTADO: configuración de demo en producción:${problems}" >&2
+        exit 1
+    fi
+    smoke_demo="false"
+    echo "[deploy] Configuración de producción OK (sin semilla demo ni llaves generadas)"
+fi
 
 run bash scripts/backup.sh
 run docker compose pull migrate api scheduler web
 run docker compose run --rm --no-deps migrate
 run docker compose up -d --no-build --no-deps --wait api scheduler web
-run env BASE_URL="$BASE_URL" bash scripts/smoke-test.sh
+run env BASE_URL="$BASE_URL" SMOKE_DEMO_CHECKS="$smoke_demo" bash scripts/smoke-test.sh
 
 echo "[deploy] Despliegue de ${environment} terminado (DRY_RUN=${DRY_RUN})"
 echo "[deploy] Rollback: DRY_RUN=0 scripts/deploy.sh ${environment} <imagen-api:sha-anterior> <imagen-web:sha-anterior>"
