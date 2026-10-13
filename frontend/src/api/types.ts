@@ -1,4 +1,4 @@
-// Tipos de la API v1, escritos A MANO contra docs/openapi.yaml (0.6.0), que es la
+// Tipos de la API v1, escritos A MANO contra docs/openapi.yaml (0.7.0), que es la
 // fuente de verdad. Compromiso aceptado: no se generan desde el OpenAPI para no
 // agregar herramientas; al cambiar el contrato hay que actualizar este archivo.
 // Solo se tipan los campos que usa la interfaz.
