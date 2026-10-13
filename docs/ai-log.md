@@ -668,3 +668,24 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Para verificar el script de idempotencia se dispensó 1 unidad (y se hizo una búsqueda de paciente) en la BD de **desarrollo**; `make fresh` la repone. El eval sigue en 18/18 sobre esa BD.
   - Quedan 6 advertencias de `redocly lint` aceptadas: sin `license`, servidores en `localhost` (es la demo) y sondas sin respuesta 4xx.
   - Inconsistencias vistas y no corregidas (fuera de alcance): la cabecera de `frontend/src/api/types.ts` cita OpenAPI 0.6.0; S-05 dice que desarrollo usa el servidor embebido de PHP (desde la Fase 7 es PHP-FPM); `docs/PROGRESO.md` aún marca la Fase 8 como siguiente y dice que falta el README; `docs/DEPLOY.md` pasa de una página.
+
+### 2026-10-13 — Revisión final: RN-01 en BD para dispensación (M1), eval en producción (A1) y eval robusto a la demo (M5)
+- Agente: desarrollador backend (Claude Code)
+- Qué generó la IA:
+  - Migración `2026_10_13_100000_add_dispensation_lot_expiry_guard.php`: función SQL `business_today()` (fecha de Bogotá, único lugar del SQL con la zona, S-65), trigger `BEFORE INSERT` `dispensation_item_lots_check_lot` que rechaza lotes con `expires_at < business_today()`, y `transfer_item_lots_check_lot` redefinido para usar la misma función. `down()` restaura la versión anterior.
+  - `ApiErrorRenderer` mapea el trigger nuevo a 422 `LOTE_VENCIDO`. Pruebas en `DispensingConstraintsTest` (INSERT directo de lote vencido falla; el que vence hoy y uno vigente pasan; `business_today()` = `BusinessDate::today()`).
+  - `git mv` del conjunto del eval a `backend/database/assistant/eval.json`; comando, prueba, CI (verifica que la imagen lleve el conjunto y no `tests/`), `.dockerignore`, `docs/asistente-ia.md` y supuestos S-96/S-105.
+  - Campos nuevos del eval: `expected_lots_if_stocked` (par lote + bodega: debe estar en las filas y en la respuesta si HOY tiene existencias en `stocks`, y no estar si no las tiene) y `expected_result_not_contains`. Aplicados a C01, C02, C12 y C18.
+- Qué decisión tomó y por qué:
+  - Flujo en palabras simples: al dispensar, la app ya elige lotes por FEFO sin vencidos; ahora, además, cuando se guarda "de qué lote salió", la BD revisa la fecha del lote contra el "hoy" de Bogotá y, si está vencido, rechaza la fila y toda la transacción se deshace (no se descuenta stock ni se escribe kardex).
+  - Crear `business_today()` en vez de copiar `now() AT TIME ZONE 'America/Bogota'` en el trigger nuevo: así la zona queda en un solo sitio del SQL. No hacía falta un permiso nuevo para `fartmar_app` (EXECUTE es de PUBLIC por defecto y la función solo lee `lots`); se comprobó en el stack de producción con `SET ROLE fartmar_app` dentro de una transacción revertida.
+  - Solo `INSERT`: una entrega pasada no se invalida porque el lote venza después.
+  - El eval no fija existencias: la demo A agota `L-ACE-2402` en Farmacia Central y la respuesta "no hay lotes" es correcta para esos datos. El caso ahora compara con `stocks` en el momento del eval. Los casos de seguridad, inyección y fuera de alcance no cambiaron. El aviso de semilla modificada se mantiene.
+  - `DispenseEdgeCasesTest` (22:00 de Bogotá) viajaba a una fecha fija pasada (2026-10-08); con el trigger, PostgreSQL (cuyo `now()` no mueve `travelTo`) veía vencido el lote que para la app "vence hoy". Ahora viaja a un día futuro relativo a hoy.
+- Puntos que Daniel debe revisar/entender:
+  - Las pruebas que viajan en el tiempo en PHP hacia el PASADO y dispensan o trasladan lotes "que vencen hoy" chocarán con los triggers (S-65). Viajar al futuro es seguro.
+  - Cómo funciona `expected_lots_if_stocked` y por qué no es un chequeo tautológico (lee `stocks` directo, no la herramienta).
+- Riesgos o cosas que podrían estar mal:
+  - Las fechas de la semilla son relativas al día en que se sembró: semanas después, `L-ACE-2402` vence y C01 cambia de resultado esperado (falla la parte "si tiene existencias, debe estar en lotes por vencer"). `make fresh` lo arregla; el eval de CI siempre siembra de cero.
+  - En la frontera de medianoche, el reloj de PHP y el de PostgreSQL pueden diferir unos segundos: el trigger podría rechazar un lote que la app consideró vigente (la transacción se deshace y responde 422 `LOTE_VENCIDO`).
+  - README.md y docs/SUSTENTACION.md todavía citan la ruta vieja del eval y el "17/18" (los actualiza otro agente).

@@ -82,9 +82,8 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   - Variables nuevas en `.env.example` y compose: `LLM_PROVIDER` (default `mock`), `OLLAMA_URL`, `OLLAMA_MODEL`,
     `LLM_API_KEY` (nunca en el repo), `ANTHROPIC_MODEL`, `LLM_TIMEOUT`, `LLM_MAX_TOKENS`. El compose tiene `extra_hosts` para
     `host.docker.internal` (Ollama en el host).
-  - El eval lee `backend/tests/Assistant/eval.json`: si la imagen de producción excluye `tests/`, mover el archivo o
-    correr el eval desde la imagen de CI. Agregar `php artisan assistant:eval` al pipeline (sobre BD recién sembrada;
-    el comando avisa si la semilla fue modificada).
+  - (Resuelto en la revisión final, A1) El eval lee `backend/database/assistant/eval.json`, que va en la imagen de
+    producción; corre en CI sobre BD recién sembrada y también con `docker compose exec -T api php artisan assistant:eval`.
 - Proveedores reales sin probar en vivo: Ollama no está instalado en el host y Anthropic solo se probó con
   `Http::fake`. Un nombre propio escrito en la pregunta no se detecta (S-92): con proveedor externo saldría de la IPS.
 - Bajos abiertos: nombres de bodega/producto (editables por admin) no van marcados como no confiables (L1); el mock no
