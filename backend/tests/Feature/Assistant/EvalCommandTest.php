@@ -18,7 +18,7 @@ beforeEach(function () {
 });
 
 it('el conjunto de evaluación tiene al menos 12 casos con los campos esperados y cubre los casos del enunciado', function () {
-    $suite = json_decode(file_get_contents(base_path('tests/Assistant/eval.json')), true, flags: JSON_THROW_ON_ERROR);
+    $suite = json_decode(file_get_contents(base_path('database/assistant/eval.json')), true, flags: JSON_THROW_ON_ERROR);
 
     expect(count($suite['cases']))->toBeGreaterThanOrEqual(12);
     foreach ($suite['cases'] as $case) {

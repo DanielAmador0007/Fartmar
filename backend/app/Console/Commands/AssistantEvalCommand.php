@@ -14,7 +14,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Corre el conjunto de evaluación del asistente (tests/Assistant/eval.json)
+ * Corre el conjunto de evaluación del asistente (database/assistant/eval.json)
  * contra la BD actual (la de desarrollo con datos semilla) y reporta una
  * tabla con cada caso y el porcentaje de aciertos. Termina con código 1 si
  * queda por debajo del umbral, para usarlo en CI.
@@ -32,13 +32,13 @@ class AssistantEvalCommand extends Command
     protected $signature = 'assistant:eval
         {--provider=mock : Proveedor a evaluar (mock, ollama, anthropic)}
         {--threshold= : Porcentaje mínimo de aciertos (por defecto ASSISTANT_EVAL_THRESHOLD)}
-        {--file= : Ruta del conjunto de evaluación (por defecto tests/Assistant/eval.json)}';
+        {--file= : Ruta del conjunto de evaluación (por defecto database/assistant/eval.json)}';
 
     protected $description = 'Evalúa el asistente IA con el conjunto de preguntas y reporta los aciertos';
 
     public function handle(LlmProviderFactory $factory): int
     {
-        $path = (string) ($this->option('file') ?: base_path('tests/Assistant/eval.json'));
+        $path = (string) ($this->option('file') ?: base_path('database/assistant/eval.json'));
         $suite = is_file($path) ? json_decode((string) file_get_contents($path), true) : null;
         if (! is_array($suite) || ! is_array($suite['cases'] ?? null) || $suite['cases'] === []) {
             $this->error("No se pudo leer el conjunto de evaluación: {$path}");
