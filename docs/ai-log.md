@@ -647,3 +647,24 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - `apk upgrade` hace que dos construcciones en días distintos puedan diferir en paquetes del sistema.
   - DEPLOY.md quedó en unas 760 palabras (algo más de una página) por los pasos de configuración que pidió la revisión.
   - El `umask 077` no se puede observar en NTFS desde Git Bash (los permisos se emulan); en Linux aplica.
+
+### 2026-10-13 — Fase 8: README, OpenAPI 0.7.0, borrador de AI_USAGE y guía de sustentación
+- Agente: documentador
+- Qué generó la IA:
+  - `README.md`: arranque en un comando (bash y PowerShell), servicios y puertos, usuarios demo por rol, `make test/lint/eval/test-concurrency`, arquitectura, ER resumido, tabla RN-01…RN-11 → código / BD / pruebas (rutas verificadas con Grep), 8 decisiones con alternativa descartada y costo, supuestos principales, asistente IA, seguridad, librerías y "qué quedó fuera".
+  - `docs/openapi.yaml` 0.7.0: `redocly lint` daba 6 errores (5 `nullable` de OpenAPI 3.0 en un documento 3.1 y un `description` sin comillas que YAML partía en dos claves dentro de un mapa en flujo, en `tools_used.ok`). Corregidos; además `operationId` derivado del nombre de ruta de Laravel, el header `X-Correlation-Id` del cliente y los headers de correlación en las respuestas compartidas (antes eran componentes sin usar), descripciones de tags y las sondas `/health` y `/ready`. Sin cambios de contrato. Comparado con `route:list`: 35/35 operaciones.
+  - `AI_USAGE.draft.md` (no `AI_USAGE.md`): herramientas, agentes y tareas desde este log; candidatos de ejemplos aceptados y corregidos marcados como "no implican que Daniel los revisó", y bloques `<!-- DANIEL: … -->` / `[DANIEL: completar]`.
+  - `docs/SUSTENTACION.md`: guion por pesos de la rúbrica, demo paso a paso (A–G), demostración de concurrencia, 22 preguntas con `archivo:línea`, 7 cambios en vivo con archivos y pruebas.
+- Qué decisión tomó y por qué:
+  - Para la demo FEFO multi-lote se usa una prescripción nueva del médico (60 de acetaminofén): con la semilla, ninguna dispensación sembrada cruza dos lotes; así además se ve el lote vencido `L-ACE-2401` excluido.
+  - Se verificó en vivo lo que dice la guía: el script PowerShell de idempotencia (201 → 200 con `Idempotent-Replayed: true` → 409 con otro cuerpo), el `UPDATE` del kardex rechazado por el trigger, la consulta de `patient_access_logs`, `make eval` (18/18) y el grupo de concurrencia (20/20). Mutación: al quitar los dos `FOR UPDATE` de `StockService` (líneas 56 y 163), la prueba de la última unidad da `OK=1, CHECK_VIOLATION=7` en vez de `STOCK_INSUFICIENTE=7`: no hay sobreventa (el CHECK la frena) pero el usuario vería un error técnico. Se revirtió con `git checkout`.
+  - El README no declara que CI esté corriendo en GitHub: PROGRESO registra el bloqueo de facturación durante el desarrollo y no se pudo consultar el estado actual (`gh` sin sesión); se redactó como "no verificado" y se remite a la pestaña *Actions*.
+  - Librerías: no hay dependencias fuera del stack; se documentan las del stack con su motivo y las descartadas a propósito (axios, MSW, librerías de UI/formularios, generación de tipos desde OpenAPI).
+- Puntos que Daniel debe revisar/entender:
+  - Escribir con sus palabras las secciones marcadas de `AI_USAGE.draft.md` y renombrarlo a `AI_USAGE.md`; no copiar como propios los candidatos si no participó en esas decisiones.
+  - Ensayar a mano los cambios en vivo de `docs/SUSTENTACION.md` §6 (en especial el aviso de 6.1: un `ALERT_EXPIRY_DAYS` distinto en el `.env` de desarrollo también lo ve Pest).
+  - Las referencias `archivo:línea` de la guía corresponden a este commit.
+- Riesgos o cosas que podrían estar mal:
+  - Para verificar el script de idempotencia se dispensó 1 unidad (y se hizo una búsqueda de paciente) en la BD de **desarrollo**; `make fresh` la repone. El eval sigue en 18/18 sobre esa BD.
+  - Quedan 6 advertencias de `redocly lint` aceptadas: sin `license`, servidores en `localhost` (es la demo) y sondas sin respuesta 4xx.
+  - Inconsistencias vistas y no corregidas (fuera de alcance): la cabecera de `frontend/src/api/types.ts` cita OpenAPI 0.6.0; S-05 dice que desarrollo usa el servidor embebido de PHP (desde la Fase 7 es PHP-FPM); `docs/PROGRESO.md` aún marca la Fase 8 como siguiente y dice que falta el README; `docs/DEPLOY.md` pasa de una página.
