@@ -89,7 +89,7 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   `Http::fake`. Un nombre propio escrito en la pregunta no se detecta (S-92): con proveedor externo saldría de la IPS.
 - Bajos abiertos: nombres de bodega/producto (editables por admin) no van marcados como no confiables (L1); el mock no
   entiende sinónimos ("paracetamol"); el filtro de entrada rechaza lotes numéricos de ≥ 7 dígitos.
-- En la BD de desarrollo el eval da 17/18 porque la demo de la Fase 5 dispensó L-ACE-2402; `make fresh` lo restablece.
+- (Resuelto en la revisión final, M5) El eval ya no depende de las cantidades de la semilla: da 18/18 también tras la demo.
 
 ## Lo que las fases siguientes deben saber de la Fase 5
 
