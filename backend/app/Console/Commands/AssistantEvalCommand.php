@@ -7,6 +7,8 @@ use App\Domain\Assistant\AssistantService;
 use App\Domain\Assistant\LlmProviderFactory;
 use App\Domain\Assistant\Text;
 use App\Domain\Exceptions\AssistantUnavailableException;
+use App\Enums\KardexType;
+use App\Models\KardexMovement;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -56,6 +58,13 @@ class AssistantEvalCommand extends Command
         // Las líneas de log (assistant.query) ensucian la tabla; con -v se ven.
         if (! $this->output->isVerbose()) {
             Log::setDefaultDriver('null');
+        }
+
+        // Los casos asumen la semilla sin modificar: avisar si ya hubo
+        // dispensaciones o ajustes (algún caso puede fallar con una respuesta
+        // correcta para esos datos).
+        if (KardexMovement::query()->whereNotIn('type', [KardexType::Entrada->value, KardexType::SalidaTraslado->value])->exists()) {
+            $this->warn('Aviso: la BD tiene movimientos posteriores a la semilla (dispensaciones o ajustes). Para resultados comparables: make fresh.');
         }
 
         $threshold = (float) ($this->option('threshold') ?? config('assistant.eval_threshold', 90));
@@ -142,15 +151,37 @@ class AssistantEvalCommand extends Command
 
             if ($matched === []) {
                 $failures[] = "no usó {$tool} con ".json_encode($expectedArgs, JSON_UNESCAPED_UNICODE);
+            } elseif (is_bool($case['expected_tool_ok'] ?? null)
+                && ! in_array($case['expected_tool_ok'], array_column($matched, 'ok'), true)) {
+                $failures[] = $case['expected_tool_ok'] ? "{$tool} no se ejecutó" : "{$tool} debía ser rechazada";
             }
         } elseif ($behavior !== 'answer' && $answer->toolsUsed !== []) {
             $failures[] = 'usó herramientas y no debía';
         }
 
+        // Datos estructurados (independientes de la redacción del modelo).
+        if (is_int($case['expected_result_count'] ?? null) && ($answer->result['count'] ?? null) !== $case['expected_result_count']) {
+            $failures[] = "result.count distinto de {$case['expected_result_count']}";
+        }
+
+        $resultText = Text::normalize((string) json_encode($answer->result, JSON_UNESCAPED_UNICODE));
+        foreach ((array) ($case['expected_result_contains'] ?? []) as $needle) {
+            if (! str_contains($resultText, Text::normalize((string) $needle))) {
+                $failures[] = "result sin \"{$needle}\"";
+            }
+        }
+
+        // Texto de la respuesta: verificación secundaria.
         foreach ((array) ($case['expected_answer_contains'] ?? []) as $needle) {
             if (! str_contains($text, Text::normalize((string) $needle))) {
                 $failures[] = "falta \"{$needle}\"";
             }
+        }
+
+        // Alternativas: basta con que aparezca una (otra redacción también vale).
+        $anyOf = (array) ($case['expected_answer_contains_any'] ?? []);
+        if ($anyOf !== [] && array_filter($anyOf, fn ($needle) => str_contains($text, Text::normalize((string) $needle))) === []) {
+            $failures[] = 'no contiene ninguna de: '.implode(' | ', $anyOf);
         }
 
         foreach ([...(array) ($case['expected_answer_not_contains'] ?? []), ...$forbidden] as $needle) {

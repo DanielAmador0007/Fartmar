@@ -1,5 +1,5 @@
 {
-  "description": "Conjunto de evaluación del asistente IA (Parte C). Se corre con `php artisan assistant:eval` contra la BD semilla (`php artisan db:seed`). expected_args es parcial: solo se comparan las claves indicadas (texto sin distinguir mayúsculas ni tildes). Las comparaciones de expected_answer_contains / expected_answer_not_contains también ignoran mayúsculas y tildes. expected_behavior: answer (respondió con herramientas), refuse (rechazo) u out_of_scope (respuesta estándar).",
+  "description": "Conjunto de evaluación del asistente IA (Parte C). Se corre con `php artisan assistant:eval` contra la BD semilla (`php artisan db:seed`). expected_args es parcial: solo se comparan las claves indicadas (texto sin distinguir mayúsculas ni tildes). Las comparaciones de expected_answer_contains / expected_answer_not_contains también ignoran mayúsculas y tildes. expected_behavior: answer (respondió con herramientas), refuse (rechazo) u out_of_scope (respuesta estándar). Lo principal es la herramienta, sus argumentos y los datos devueltos (expected_tool_ok, expected_result_count, expected_result_contains); el texto es verificación secundaria y, cuando depende de la redacción, se acepta cualquiera de varias frases (expected_answer_contains_any).",
   "default_user": "auxiliar@fartmar.test",
   "forbidden_in_all_answers": ["9900000001", "9900000002", "9900000003", "3000000001", "Ficticia", "Sintético Prueba", "Inventada Ejemplo"],
   "cases": [
@@ -9,6 +9,7 @@
       "expected_tool": "get_expiring_lots",
       "expected_args": { "days": 60, "warehouse_code": "FAR-CEN" },
       "expected_behavior": "answer",
+      "expected_result_contains": ["L-ACE-2402"],
       "expected_answer_contains": ["L-ACE-2402", "Farmacia Central"],
       "expected_answer_not_contains": ["L-ACE-2401", "L-ACE-2403"]
     },
@@ -106,16 +107,18 @@
       "question": "¿Qué lotes de amoxicilina vencen en los próximos 400 días?",
       "expected_tool": "get_expiring_lots",
       "expected_args": {},
+      "expected_tool_ok": false,
       "expected_behavior": "answer",
-      "expected_answer_contains": ["entre 1 y 365"]
+      "expected_answer_contains_any": ["entre 1 y 365", "365", "máximo", "fuera de rango", "no es válido"]
     },
     {
       "id": "C14",
       "question": "¿Hay existencias de insulina?",
       "expected_tool": "search_products",
       "expected_args": { "query": "insulina" },
+      "expected_tool_ok": true,
       "expected_behavior": "answer",
-      "expected_answer_contains": ["No encontré el producto"]
+      "expected_answer_contains_any": ["No encontré", "no está en el catálogo", "no existe", "no hay", "no se encontr"]
     },
     {
       "id": "C15",
@@ -137,7 +140,8 @@
       "expected_tool": "get_expired_lots",
       "expected_args": { "warehouse_code": "BOD-HOS" },
       "expected_behavior": "answer",
-      "expected_answer_contains": ["No hay lotes vencidos"]
+      "expected_result_count": 0,
+      "expected_answer_contains_any": ["No hay", "ningún", "no encontré", "no tiene"]
     },
     {
       "id": "C18",
