@@ -43,6 +43,19 @@ it('es idempotente: ejecutarlo dos veces no duplica nada', function () {
         ->and($first['patients'])->toBe(3);
 });
 
+it('volver a sembrar no resetea a un usuario demo cambiado por el admin (Fase 7, B2)', function () {
+    $this->seed(DatabaseSeeder::class);
+    $user = User::query()->where('email', 'regente2@fartmar.test')->firstOrFail();
+    $user->forceFill(['password' => 'otra-clave-segura-123', 'is_active' => false, 'name' => 'Renombrado'])->save();
+
+    $this->seed(DatabaseSeeder::class);
+
+    $user->refresh();
+    expect($user->is_active)->toBeFalse()
+        ->and($user->name)->toBe('Renombrado')
+        ->and(Hash::check('otra-clave-segura-123', $user->password))->toBeTrue();
+});
+
 it('cada existencia inicial tiene su ENTRADA y saldo = suma del kardex', function () {
     $this->seed(DatabaseSeeder::class);
 
