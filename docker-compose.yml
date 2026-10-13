@@ -48,15 +48,15 @@ x-app-env: &app-env
   LOG_LEVEL: ${LOG_LEVEL:-info}
   TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
   SANCTUM_EXPIRATION: ${SANCTUM_EXPIRATION:-480}
-  # La SPA llega por el mismo origen (Nginx): CORS solo para el Vite de desarrollo.
-  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+  # La SPA llega por el mismo origen (Nginx): sin orígenes CORS por defecto. El
+  # override de desarrollo agrega el Vite (http://localhost:5173).
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
   API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
   ALERT_EXPIRY_DAYS: ${ALERT_EXPIRY_DAYS:-90}
-  # Asistente IA (config/assistant.php). LLM_API_KEY sin valor por defecto: viene del .env.
+  # Asistente IA (config/assistant.php). LLM_API_KEY solo en el servicio api.
   LLM_PROVIDER: ${LLM_PROVIDER:-mock}
   OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
   OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
-  LLM_API_KEY: ${LLM_API_KEY:-}
   ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
   LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
   LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1024}
@@ -91,6 +91,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     logging: *logging
+    networks: [data]
 
   # One-shot (como un Job de Kubernetes): se ejecuta en cada `up`, aplica lo
   # pendiente y termina. La API no arranca hasta que termine bien, y con varias
@@ -120,6 +121,7 @@ services:
       disable: true
     restart: "no"
     logging: *logging
+    networks: [data]
 
   api:
     <<: [*api-image, *hardening]
@@ -132,6 +134,8 @@ services:
       <<: *app-env
       DB_USERNAME: ${DB_APP_USERNAME:-fartmar_app}
       DB_PASSWORD: ${DB_APP_PASSWORD}
+      # Secreto del proveedor externo: solo lo necesita quien atiende /assistant.
+      LLM_API_KEY: ${LLM_API_KEY:-}
     volumes:
       - app_keys:/var/lib/fartmar:ro
     # Linux: host.docker.internal no existe por defecto (Ollama en el host).
@@ -143,10 +147,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    # SIGQUIT = PHP-FPM termina las peticiones en curso antes de salir.
+    # SIGQUIT = PHP-FPM termina las peticiones en curso antes de salir. El
+    # plazo cubre la petición más larga (asistente: request_terminate_timeout
+    # 150 s, S-110); después Docker envía SIGKILL.
     stop_signal: SIGQUIT
+    stop_grace_period: 155s
     restart: unless-stopped
     logging: *logging
+    # edge: lo alcanza Nginx; data: llega a Postgres.
+    networks: [edge, data]
 
   scheduler:
     <<: [*api-image, *hardening]
@@ -173,6 +182,7 @@ services:
     stop_signal: SIGTERM
     restart: unless-stopped
     logging: *logging
+    networks: [data]
 
   web:
     <<: *hardening
@@ -195,6 +205,13 @@ services:
       start_period: 10s
     restart: unless-stopped
     logging: *logging
+    # Solo edge: Nginx no tiene ruta hacia Postgres.
+    networks: [edge]
+
+# Dos redes: edge (web, api) y data (api, migrate, scheduler, db).
+networks:
+  edge:
+  data:
 
 volumes:
   db_data:

@@ -34,6 +34,8 @@ x-dev-env: &dev-env
   DB_PASSWORD: ${POSTGRES_PASSWORD}
   DB_APP_USERNAME: ""
   SEED_DEMO_DATA: "true"
+  # El Vite del host (http://localhost:5173) puede llamar la API.
+  CORS_ALLOWED_ORIGINS: http://localhost:5173
 
 # Las llaves de desarrollo viven en backend/.env (el entrypoint las genera).
 # Se quitan del entorno con !reset (dentro de cada servicio: las etiquetas no
