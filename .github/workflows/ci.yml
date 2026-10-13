@@ -1,7 +1,10 @@
 name: CI
 
-# Calidad -> pruebas -> imágenes -> staging (simulado en el runner) -> producción
-# (aprobación manual). Ver docs/DEPLOY.md.
+# Calidad -> pruebas -> imágenes (+ Trivy) -> staging (simulado en el runner) ->
+# publicación en GHCR -> producción (aprobación manual). Ver docs/DEPLOY.md.
+#
+# Acciones fijadas por SHA de commit (con la versión al lado): un tag se puede
+# mover; un SHA no. Para actualizar: git ls-remote https://github.com/<repo> refs/tags/<vX.Y.Z>
 on:
   push:
     branches: [main]
@@ -9,15 +12,17 @@ on:
   workflow_dispatch:
     inputs:
       confirm_production:
-        description: 'Escriba DESPLEGAR para pasar a producción desde una ejecución manual en main (alternativa si el repositorio no admite revisores en environments)'
+        description: 'Escriba DESPLEGAR para pasar a producción desde esta ejecución manual en main'
         required: false
         default: ''
         type: string
 
-# Cancela ejecuciones viejas de la misma rama/PR. En main no: cancelar un
-# despliegue a medias es peor que esperar.
+# Ramas y PR: una ejecución viva por ref (la nueva cancela la vieja). En main
+# cada ejecución tiene su propio grupo (run_id): así un despliegue esperando
+# aprobación no bloquea los commits siguientes. La serialización de producción
+# vive solo en el job deploy-production.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -29,17 +34,19 @@ env:
 
 jobs:
   backend-lint:
-    name: Backend · Pint + Larastan
+    name: Backend · Pint + Larastan + composer audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Configurar PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ env.PHP_VERSION }}
           extensions: pdo_pgsql, intl, pcntl, zip
@@ -52,7 +59,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Caché de Composer
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
@@ -61,6 +68,9 @@ jobs:
       - name: Instalar dependencias
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      - name: composer audit (vulnerabilidades conocidas)
+        run: composer audit --no-interaction
+
       - name: Pint (estilo)
         run: vendor/bin/pint --test
 
@@ -68,23 +78,27 @@ jobs:
         run: vendor/bin/phpstan analyse --no-progress --error-format=github
 
   frontend-lint:
-    name: Frontend · ESLint + tsc
+    name: Frontend · ESLint + tsc + npm audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Configurar Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - run: npm ci
+      - name: npm audit (high o más)
+        run: npm audit --audit-level=high
       - name: ESLint
         run: npm run lint
       - name: TypeScript (tsc --noEmit vía tsc -b)
@@ -95,7 +109,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: shellcheck de los scripts
         run: shellcheck scripts/*.sh docker/php/*.sh
       - name: docker compose config (producción y desarrollo)
@@ -138,10 +154,12 @@ jobs:
       LLM_PROVIDER: mock
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Configurar PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ env.PHP_VERSION }}
           extensions: pdo_pgsql, intl, pcntl, zip
@@ -154,7 +172,7 @@ jobs:
         run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
       - name: Caché de Composer
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
           key: composer-${{ runner.os }}-${{ hashFiles('backend/composer.lock') }}
@@ -194,10 +212,12 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Configurar Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -208,62 +228,39 @@ jobs:
         run: npm run test:run
 
   build-images:
-    name: Imágenes Docker (api, web)
+    name: Imágenes Docker (api, web) + Trivy
     needs: [backend-lint, frontend-lint, infra-lint, backend-test, frontend-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: write
-    env:
-      # Push en main (push o ejecución manual), nunca desde un PR.
-      PUSH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Nombres de imagen (GHCR exige minúsculas)
-        id: names
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "api=ghcr.io/${owner}/fartmar-api" >> "$GITHUB_OUTPUT"
-          echo "web=ghcr.io/${owner}/fartmar-web" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Login a GHCR (solo main)
-        if: env.PUSH == 'true'
-        uses: docker/login-action@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # Se construye una vez y se carga en el daemon local: el MISMO artefacto
-      # se sube a GHCR (main) y se pasa al job de staging.
+      # se escanea, se prueba en staging y se publica.
       - name: Build api
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: backend
           build-contexts: infra=docker
           target: production
           load: true
-          tags: |
-            fartmar-api:ci
-            ${{ steps.names.outputs.api }}:${{ github.sha }}
+          tags: fartmar-api:ci
           labels: org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
       - name: Build web
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: frontend
           build-contexts: infra=docker
           target: production
           load: true
-          tags: |
-            fartmar-web:ci
-            ${{ steps.names.outputs.web }}:${{ github.sha }}
+          tags: fartmar-web:ci
           labels: org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
@@ -277,23 +274,28 @@ jobs:
             exit 1
           fi
 
-      - name: Push a GHCR (tags sha y latest, solo main)
-        if: env.PUSH == 'true'
-        env:
-          API: ${{ steps.names.outputs.api }}
-          WEB: ${{ steps.names.outputs.web }}
-          SHA: ${{ github.sha }}
-        run: |
-          for image in "$API" "$WEB"; do
-            docker push "${image}:${SHA}"
-            docker tag "${image}:${SHA}" "${image}:latest"
-            docker push "${image}:latest"
-          done
+      - name: Trivy · imagen api (HIGH/CRITICAL con arreglo disponible)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fartmar-api:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
 
-      - name: Exportar imágenes para staging
+      - name: Trivy · imagen web (HIGH/CRITICAL con arreglo disponible)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fartmar-web:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+
+      - name: Exportar imágenes
         run: docker save fartmar-api:ci fartmar-web:ci | gzip > images.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: images
           path: images.tar.gz
@@ -307,9 +309,11 @@ jobs:
     environment:
       name: staging
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: images
 
@@ -330,17 +334,22 @@ jobs:
       - name: Levantar el stack de producción con las imágenes del commit
         run: docker compose up -d --no-build --wait --wait-timeout 300
 
-      - name: Smoke test (/health, /ready, SPA, login, endpoint autenticado)
+      - name: Smoke test (sondas, SPA, login, escrituras demo con fartmar_app)
         run: bash scripts/smoke-test.sh
 
       - name: Contenedores sin root y rol de BD sin TRUNCATE
         run: |
           test "$(docker compose exec -T api id -u)" != "0"
           test "$(docker compose exec -T web id -u)" != "0"
-          if docker compose exec -T db psql -U fartmar_app -d fartmar -c 'TRUNCATE kardex_movements'; then
+          # El rol se puede usar (si el SELECT falla, la prueba de abajo no diría nada)...
+          docker compose exec -T db psql -U fartmar_app -d fartmar -v ON_ERROR_STOP=1 -c 'SELECT 1'
+          # ...y el TRUNCATE falla justamente por permisos.
+          if out="$(docker compose exec -T db psql -U fartmar_app -d fartmar -v ON_ERROR_STOP=1 -c 'TRUNCATE kardex_movements' 2>&1)"; then
             echo "::error::El rol de la aplicación pudo hacer TRUNCATE del kardex"
             exit 1
           fi
+          echo "$out"
+          grep -q 'permission denied' <<< "$out" || { echo "::error::TRUNCATE falló, pero no por permisos"; exit 1; }
 
       - name: Respaldo y prueba de restauración
         run: |
@@ -356,29 +365,89 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  publish-images:
+    name: Publicar en GHCR (sha + latest, solo main)
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Único job con permiso de escribir paquetes.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: images
+
+      - name: Cargar las imágenes probadas en staging
+        run: gunzip -c images.tar.gz | docker load
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Etiquetar y subir (GHCR exige minúsculas)
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          for name in api web; do
+            image="ghcr.io/${owner}/fartmar-${name}"
+            docker tag "fartmar-${name}:ci" "${image}:${SHA}"
+            docker tag "fartmar-${name}:ci" "${image}:latest"
+            docker push "${image}:${SHA}"
+            docker push "${image}:latest"
+          done
+
   deploy-production:
     name: Producción (aprobación manual)
-    needs: deploy-staging
+    needs: publish-images
+    # Repo público: sin revisores configurados, un push a main NO despliega.
+    #  - push: solo si la variable de repositorio PRODUCTION_REVIEWERS_CONFIGURED
+    #    es 'true' (quien la pone confirma que el environment production tiene
+    #    Required reviewers; ver docs/DEPLOY.md).
+    #  - workflow_dispatch en main con confirm_production=DESPLEGAR.
     if: >-
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' ||
+      ((github.event_name == 'push' && vars.PRODUCTION_REVIEWERS_CONFIGURED == 'true') ||
        (github.event_name == 'workflow_dispatch' && inputs.confirm_production == 'DESPLEGAR'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Los revisores obligatorios se configuran en GitHub: Settings > Environments
-    # > production > Required reviewers. El job queda en espera hasta que alguien
-    # lo apruebe. Ver docs/DEPLOY.md.
     environment:
       name: production
+    # Un despliegue de producción a la vez; uno nuevo que llega mientras otro
+    # espera aprobación reemplaza al que espera (no se cancela uno en curso).
     concurrency:
       group: deploy-production
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - name: Despliegue simulado de las imágenes del commit
+      # .env de producción FICTICIO: sin semilla demo ni llaves generadas por la
+      # app; las llaves y claves se generan aquí, en el job, y no salen del
+      # runner. En un despliegue real vendrían de los secretos del environment.
+      - name: Configuración de producción ficticia
         run: |
           cp .env.example .env
+          set_env() { sed -i "s|^$1=.*|$1=$2|" .env; }
+          set_env ALLOW_GENERATED_KEYS false
+          set_env SEED_DEMO_DATA false
+          set_env APP_KEY "base64:$(openssl rand -base64 32)"
+          set_env PATIENT_HASH_KEY "base64:$(openssl rand -base64 32)"
+          set_env POSTGRES_PASSWORD "$(openssl rand -hex 24)"
+          set_env DB_APP_PASSWORD "$(openssl rand -hex 24)"
+
+      - name: Despliegue simulado de las imágenes del commit
+        env:
+          # Usuario del smoke test en producción (secretos del environment).
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           bash scripts/deploy.sh production \
             "ghcr.io/${owner}/fartmar-api:${GITHUB_SHA}" \
