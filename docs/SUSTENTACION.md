@@ -155,7 +155,8 @@ Como `auxiliar@fartmar.test` → **Asistente**:
 5. Código: `Domain/Assistant/AssistantService.php:44` (`ask`), `:130-135` (`<tool_result>` con `JSON_HEX_TAG`),
    `Domain/Assistant/ToolRegistry.php:84` (lista blanca → Policy → validación), `Domain/Assistant/OutputGuard.php:27`,
    `Domain/Assistant/SystemPrompt.php:24`, `Domain/Assistant/LlmProviderFactory.php:18`.
-6. `.\make.ps1 eval` → `18/18 aciertos (100,0 %)` (con semilla limpia).
+6. `.\make.ps1 eval` (desarrollo) o, sobre el stack de un comando, `docker compose exec -T api php artisan assistant:eval
+   --provider=mock` → `18/18 aciertos (100,0 %)`, también después de las demos A–F (los casos no fijan cantidades).
 
 ## 3. Cómo demostrar la concurrencia
 
@@ -202,10 +203,10 @@ UPDATE el CHECK de la BD frena la sobreventa"): el worker cambia la gramática S
 | Idempotencia | `app/Domain/Dispensing/IdempotencyGuard.php`, `app/Http/Requests/StoreDispensationRequest.php:34` |
 | Traslados | `app/Domain/Transfers/TransferService.php`, `TransferStateMachine.php`, `TransferActions.php` |
 | Ajustes, alertas, consulta de kardex | `app/Domain/Inventory/AdjustmentService.php`, `AlertService.php`, `KardexQuery.php` |
-| Errores de negocio → JSON | `app/Domain/Exceptions/*`, `app/Http/ApiErrorRenderer.php:98` (CHECK/deadlock → código de negocio) |
+| Errores de negocio → JSON | `app/Domain/Exceptions/*`, `app/Http/ApiErrorRenderer.php:98` (CHECK/trigger/deadlock → código de negocio) |
 | Permisos | `app/Policies/*`, `app/Providers/AssistantServiceProvider.php:33` (Gate `useAssistant`) |
 | Pacientes y privacidad | `app/Domain/Patients/*`, `app/Http/Resources/PatientResource.php`, `app/Logging/RedactSensitiveData.php`, `app/Http/Middleware/AssignCorrelationId.php` |
-| Asistente | `app/Domain/Assistant/*`, `tests/Assistant/eval.json`, `app/Console/Commands/AssistantEvalCommand.php` |
+| Asistente | `app/Domain/Assistant/*`, `database/assistant/eval.json`, `app/Console/Commands/AssistantEvalCommand.php` |
 | Rutas | `routes/api.php`, `routes/probes.php` |
 | Constraints y triggers | `database/migrations/*` (tabla en `docs/modelo-datos.md`) |
 | Rol de BD de la app | `app/Console/Commands/ProvisionAppDatabaseRoleCommand.php` |
@@ -223,7 +224,7 @@ UPDATE el CHECK de la BD frena la sobreventa"): el worker cambia la gramática S
    ganadora. Prueba: `tests/Concurrency/DispenseConcurrencyTest.php:158`.
 3. **¿Cómo evitas deadlocks?** Orden de bloqueo global: cabecera (prescripción/traslado) → líneas por id → existencias por
    `product_id` y `(expires_at, lot_id)` (`DispenseService.php:35-41`, `:337`). Además `DB::transaction(fn, 3)` reintenta y
-   el renderizador mapea un deadlock final a 409 `CONFLICTO_CONCURRENCIA` (`ApiErrorRenderer.php:156`). La prueba
+   el renderizador mapea un deadlock final a 409 `CONFLICTO_CONCURRENCIA` (`ApiErrorRenderer.php:161`). La prueba
    `DispenseConcurrencyTest.php:203` mira el contador de deadlocks de PostgreSQL.
 4. **Si ya tienes `FOR UPDATE`, ¿para qué el CHECK?** Defensa en profundidad: un bug, un script manual o un camino nuevo
    sin bloqueo no puede dejar stock negativo. Ver sección 3.
@@ -237,7 +238,11 @@ UPDATE el CHECK de la BD frena la sobreventa"): el worker cambia la gramática S
 8. **¿Cómo desempata FEFO?** Por `lot_id` ascendente a igual vencimiento (`FefoAllocator.php`, prueba en
    `tests/Unit/FefoAllocatorTest.php:52`).
 9. **¿Un lote que vence hoy se dispensa?** Sí: vencido es `expires_at < hoy` en Bogotá (S-13, S-14;
-   `BusinessDate.php:14`; prueba de medianoche en `DispenseEdgeCasesTest`).
+   `BusinessDate.php:14`; prueba de medianoche en `DispenseEdgeCasesTest`). **¿Y si el código fallara?** La BD también
+   lo frena, en dispensación y en traslado: triggers `dispensation_item_lots_check_lot` y `transfer_item_lots_check_lot`
+   con la función `business_today()` (migración `2026_10_13_100000_add_dispensation_lot_expiry_guard.php`), mapeados a
+   422 `LOTE_VENCIDO` (`ApiErrorRenderer.php:148-159`). Prueba: `tests/Feature/Database/DispensingConstraintsTest.php`
+   (INSERT directo de un lote vencido falla; el que vence hoy pasa; `business_today()` = `BusinessDate`, S-65).
 10. **¿Qué pasa con el stock mientras un controlado espera autorización?** No se reserva stock, sí cantidad de la
     prescripción; al autorizar se revalida todo y puede fallar con `STOCK_INSUFICIENTE` (S-31).
 11. **¿Cómo garantizas solicitante ≠ aprobador?** Tres capas: `TransferPolicy::approve` (`:49`), `TransferService::approve`
@@ -271,6 +276,15 @@ UPDATE el CHECK de la BD frena la sobreventa"): el worker cambia la gramática S
     clientes; el riesgo de XSS se mitiga con expiración de 480 min y CSP (S-40, S-104).
 22. **¿Qué pasa si se pierde `APP_KEY`?** No se pueden leer documentos ni buscar pacientes: las llaves se respaldan aparte
     en el gestor de secretos; no hay rutina de re-cifrado (pendiente declarado).
+23. **¿Qué impide que un superusuario desactive el trigger del kardex?** Nada técnico, y no es el modelo de amenaza: la
+    API corre como `fartmar_app`, que no es dueño de las tablas, no tiene DDL ni permiso `TRIGGER` (no puede
+    `ALTER TABLE … DISABLE TRIGGER`) ni `TRUNCATE`, y en kardex y bitácoras solo `SELECT/INSERT`
+    (`ProvisionAppDatabaseRoleCommand.php:104`, S-101). El dueño y el superusuario los controla el DBA, fuera de la app;
+    lo que se defiende es que un bug o una inyección en la API no pueda reescribir la historia.
+24. **¿Cómo entra mercancía?** No hay API de catálogos ni de `ENTRADA` (S-119): la semilla crea lotes y existencias con
+    su `ENTRADA` en el kardex, y en la demo la mercancía que llega se registra como `AJUSTE` positivo del regente con
+    motivo (`POST /inventory-adjustments`). Hacerlo bien sería un servicio que llame a `StockService::increase` con
+    `KardexType::Entrada` (el tipo ya existe en el enum y en el CHECK).
 
 ## 6. Ensayo de cambios en vivo probables
 
@@ -312,7 +326,9 @@ Para cada uno: archivos a tocar, prueba a ajustar y cómo verificar. Practícalo
 2. Migración nueva que reemplace `kardex_movements_type_check` y `kardex_movements_direction_matches_type`
    (`2026_10_08_210400_create_kardex_movements_table.php:49-59`): agregar el tipo y su dirección (`+1`).
 3. El servicio que lo use llama a `StockService::increase(..., KardexType::DevolucionPaciente, ...)`; si fuera una
-   salida que no puede tocar vencidos, agregarlo a `EXPIRY_GUARDED` (`StockService.php:37`).
+   salida que no puede tocar vencidos, agregarlo a `EXPIRY_GUARDED` (`StockService.php:37`). En la BD, RN-01 solo la
+   frenan los triggers de `dispensation_item_lots` y `transfer_item_lots`: una salida nueva que no escriba en esas tablas
+   necesitaría su propio trigger (copiar `2026_10_13_100000_add_dispensation_lot_expiry_guard.php`).
 4. `IndexKardexRequest` ya valida con `Rule::enum(KardexType::class)`: no cambia.
 5. Frontend: `api/types.ts:225` (`KardexType`) y `features/kardex/KardexPage.tsx:10` (lista del filtro).
 6. Pruebas: `tests/Feature/Database/InventoryConstraintsTest.php` (aceptar el tipo nuevo con su dirección y rechazar la
@@ -345,7 +361,7 @@ Para cada uno: archivos a tocar, prueba a ajustar y cómo verificar. Practícalo
    (`answer()` en `:271`), si no el mock nunca la elige.
 4. Frontend: `api/types.ts` (unión `AssistantResult`) y `features/assistant/AssistantResultTable.tsx` (tabla).
 5. Pruebas: `tests/Feature/Assistant/ToolRegistryTest.php` (argumentos y Policy por rol), un caso en
-   `tests/Assistant/eval.json`; `docs/openapi.yaml` (enum `tool`) y la tabla de `docs/asistente-ia.md`.
+   `database/assistant/eval.json`; `docs/openapi.yaml` (enum `tool`) y la tabla de `docs/asistente-ia.md`.
 
 ### 6.7 Nuevo rol (p. ej. `jefe_bodega`)
 
@@ -363,6 +379,10 @@ Para cada uno: archivos a tocar, prueba a ajustar y cómo verificar. Practícalo
 - `docker compose ps` y `docker compose logs api --tail 50` (JSON con `correlation_id`; la UI muestra el mismo id en los
   errores).
 - Puerto 8080 ocupado: `WEB_HOST_PORT=8081` en `.env`.
-- Eval con 17/18: la demo consumió `L-ACE-2402`; `.\make.ps1 fresh`.
+- Eval después de la demo A: sigue en 18/18. Si la demo consumió `L-ACE-2402`, la pregunta de lotes de acetaminofén que
+  vencen en 60 días en Farmacia Central responde correctamente que no hay (el caso exige el lote solo si tiene
+  existencias). Si pasaron semanas desde la siembra, las fechas son relativas al día de la semilla y los lotes "por
+  vencer" se corren: conviene `.\make.ps1 fresh` antes de presentar (`CatalogSeeder` recalcula `expires_at` desde
+  "hoy" cada vez que corre la semilla).
 - Una prueba de concurrencia lenta en Windows: es el arranque de Laravel por proceso sobre el volumen montado; en CI
   (Linux) es más rápido.
