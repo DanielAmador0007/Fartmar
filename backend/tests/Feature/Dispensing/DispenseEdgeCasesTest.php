@@ -55,11 +55,16 @@ function outflowCount(): int
 // --- RN-01: "hoy" de vencimiento en America/Bogota (S-13, S-14) ---
 
 it('RN-01: a las 22:00 de Bogotá (03:00 UTC del día siguiente) un lote que vence hoy aún sale y el de ayer no', function () {
-    // 2026-10-09 03:00 UTC = 2026-10-08 22:00 en Bogotá: "hoy" es el 8.
-    $this->travelTo(utc('2026-10-09 03:00:00'));
+    // Un día FUTURO (no fijo): el trigger dispensation_item_lots_check_lot usa
+    // now() de PostgreSQL, que travelTo no mueve (S-65). Con una fecha pasada,
+    // la BD vería vencido el lote que para la app "vence hoy".
+    $day = CarbonImmutable::now('America/Bogota')->addDays(3)->startOfDay();
+    // 22:00 en Bogotá = 03:00 UTC del día siguiente: "hoy" sigue siendo $day.
+    $this->travelTo($day->setTime(22, 0)->utc());
+    expect(now('UTC')->hour)->toBe(3);
     $s = DispensingScenario::make([[-1, 5], [0, 2], [30, 5]], prescribed: 10);
     [$yesterday, $today, $later] = $s->lots;
-    expect($today->expires_at->toDateString())->toBe('2026-10-08');
+    expect($today->expires_at->toDateString())->toBe($day->toDateString());
 
     $this->service->create($s->auxiliar, $s->data(3), edgeKey());
 

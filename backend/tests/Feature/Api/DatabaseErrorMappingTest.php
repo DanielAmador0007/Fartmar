@@ -196,6 +196,7 @@ it('mapea los demás triggers de traslados conocidos y deja como 500 los que ind
     'discrepancia resuelta' => ['ERROR:  transfer_discrepancies_freeze_resolved: la discrepancia 1 ya está resuelta y no se puede modificar', 409, 'TRANSICION_INVALIDA'],
     'receptor resuelve' => ['ERROR:  transfer_discrepancies_check_resolver: quien recibió el traslado (usuario 3) no puede resolver su discrepancia', 403, 'SEGREGACION_FUNCIONES'],
     'lote vencido' => ['ERROR:  transfer_item_lots_check_lot: el lote 4 venció el 2026-01-01 y no se puede trasladar (RN-01)', 422, 'LOTE_VENCIDO'],
+    'lote vencido en dispensación' => ['ERROR:  dispensation_item_lots_check_lot: el lote 4 venció el 2026-01-01 y no se puede dispensar (RN-01)', 422, 'LOTE_VENCIDO'],
     'saldo de kardex (bug)' => ['ERROR:  kardex_movements_check_balance: balance_after 3 no coincide con la existencia actual 4 (bodega 1, lote 2)', 500, 'ERROR_INTERNO'],
     'prefijo solo en el SQL, no en el servidor' => ['ERROR:  new row for relation "x" violates check constraint "y"', 500, 'ERROR_INTERNO'],
 ]);

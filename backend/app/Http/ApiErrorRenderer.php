@@ -150,6 +150,13 @@ final class ApiErrorRenderer
                 'LOTE_VENCIDO',
                 'Un lote vencido no se puede trasladar (RN-01).',
             ),
+            // RN-01 en dispensación: FefoAllocator ya excluye vencidos; si la BD
+            // lo frena es porque el lote venció entre la lectura y la escritura.
+            PostgresError::triggerGuard($e) === 'dispensation_item_lots_check_lot' => self::error(
+                422,
+                'LOTE_VENCIDO',
+                'Un lote vencido no se puede dispensar (RN-01). Actualice la pantalla e intente de nuevo.',
+            ),
             // DB::transaction(..., 3) ya reintentó y se agotaron los intentos.
             PostgresError::isConcurrencyFailure($e) => self::error(
                 409,
