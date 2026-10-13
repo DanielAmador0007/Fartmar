@@ -1,0 +1,83 @@
+# FARTMAR — override de DESARROLLO. Se suma a docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build --wait
+#   (o: make dev / .\make.ps1 dev; make test|lint|eval|fresh lo levantan solos)
+#
+# Misma topología que producción (db, migrate, api PHP-FPM, scheduler, web
+# Nginx en :8080), con estas diferencias:
+#   - api/migrate/scheduler usan el target `dev` de backend/Dockerfile con el
+#     código montado desde ./backend (vendor con dependencias dev: Pest,
+#     Larastan, Pint) y las llaves en backend/.env;
+#   - APP_ENV=local, APP_DEBUG=true, usuario dueño de la BD (las pruebas
+#     necesitan DDL y TRUNCATE) y siempre con datos demo;
+#   - volumen de BD propio (db_data_dev) con la BD fartmar_test para Pest:
+#     desarrollo y demo nunca comparten datos ni llaves.
+# El frontend de desarrollo corre en el host (npm run dev, :5173) con el proxy
+# de Vite /api -> http://localhost:8080 (este Nginx).
+
+x-dev-api: &dev-api
+  build:
+    context: ./backend
+    target: dev
+    additional_contexts:
+      infra: ./docker
+  image: fartmar-api-dev:local
+  volumes:
+    - ./backend:/app
+    - composer-cache:/tmp/composer-cache
+
+x-dev-env: &dev-env
+  APP_ENV: local
+  APP_DEBUG: "true"
+  LOG_LEVEL: debug
+  DB_USERNAME: ${POSTGRES_USER:-fartmar}
+  DB_PASSWORD: ${POSTGRES_PASSWORD}
+  DB_APP_USERNAME: ""
+  SEED_DEMO_DATA: "true"
+  # El Vite del host (http://localhost:5173) puede llamar la API.
+  CORS_ALLOWED_ORIGINS: http://localhost:5173
+
+# Las llaves de desarrollo viven en backend/.env (el entrypoint las genera).
+# Se quitan del entorno con !reset (dentro de cada servicio: las etiquetas no
+# sobreviven a un merge "<<"): una variable vacía taparía la de backend/.env
+# también en cada `docker compose exec api ...` (Pest, artisan).
+services:
+  db:
+    volumes: !override
+      - db_data_dev:/var/lib/postgresql/data
+      # Crea fartmar_test la primera vez que se inicializa el volumen.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-test-db.sql:ro
+
+  # En desarrollo el maestro de PHP-FPM y composer corren como root (bind
+  # mount): necesitan las capacidades por defecto para pasar los workers a
+  # www-data. En producción (www-data, sin capacidades) se mantiene cap_drop ALL.
+  migrate:
+    <<: *dev-api
+    cap_drop: !reset []
+    environment:
+      <<: *dev-env
+      APP_KEY: !reset null
+      PATIENT_HASH_KEY: !reset null
+
+  api:
+    <<: *dev-api
+    cap_drop: !reset []
+    environment:
+      <<: *dev-env
+      APP_KEY: !reset null
+      PATIENT_HASH_KEY: !reset null
+    healthcheck:
+      # El primer arranque desde cero incluye `composer install` (en migrate).
+      start_period: 180s
+
+  scheduler:
+    <<: *dev-api
+    cap_drop: !reset []
+    environment:
+      <<: *dev-env
+      APP_KEY: !reset null
+      PATIENT_HASH_KEY: !reset null
+
+volumes:
+  db_data_dev:
+  composer-cache:

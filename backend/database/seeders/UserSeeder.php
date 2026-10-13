@@ -26,8 +26,12 @@ class UserSeeder extends Seeder
             ['email' => 'auditor@fartmar.test', 'name' => 'Auditor Demo', 'role' => Role::Auditor],
         ];
 
+        // firstOrCreate, no updateOrCreate: el servicio migrate siembra en cada
+        // `up` y no debe devolver la clave "password", el rol ni la activación a
+        // un usuario demo que el admin ya cambió (S-111). `make fresh` sí los
+        // recrea (borra la BD).
         foreach ($users as $user) {
-            User::query()->updateOrCreate(
+            User::query()->firstOrCreate(
                 ['email' => $user['email']],
                 [
                     'name' => $user['name'],

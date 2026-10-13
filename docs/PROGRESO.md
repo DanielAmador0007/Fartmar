@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-12, al cerrar la Fase 6.
+> Última actualización: 2026-10-13, al cerrar la Fase 7.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -28,16 +28,20 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 4 Seguridad y privacidad | ✅ Hecha (mergeada con el PR #3) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
 | 5 Frontend | ✅ Hecha (PR #3, mergeado) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
 | 6 Asistente IA | ✅ Hecha (PR `feat/fase-6-asistente-ia`) | `LlmProvider` mock/ollama/anthropic por `LLM_PROVIDER`, 7 herramientas de solo lectura con Policies, filtros de entrada/salida, notas de traslados nunca enviadas al modelo, `POST /assistant/query`, `assistant:eval` 18/18 con mock, pantalla del asistente; 917 Pest (3875 aserciones), 121 Vitest; revisor-senior sin Críticos, Alto y Medios corregidos; supuestos S-89…S-98; OpenAPI 0.6.1 |
-| 7 DevOps completo | ⏭️ **Siguiente** | devops-docker-ci; ver "Lo que las fases siguientes deben saber de la Fase 6" |
-| 8 Documentación y cierre | Pendiente | |
+| 7 DevOps completo | ✅ Hecha (rama `feat/fase-7-devops`, sin push) | Imágenes multi-stage sin root (PHP-FPM + Nginx con la SPA), compose tipo producción con `migrate` one-shot y `scheduler`, redes `edge`/`data`, override de desarrollo, rol de BD sin `TRUNCATE` (gestionable por el DBA), `TRUSTED_PROXIES`, headers de seguridad, logs JSON de Nginx, respaldo/restauración probados, smoke con escrituras como `fartmar_app`, CI con acciones por SHA, Trivy, auditorías y compuerta de producción, `docs/DEPLOY.md`; 931 Pest (3935 aserciones), 121 Vitest, eval 18/18; supuestos S-99…S-118. Revisor-senior: Altos y Medios corregidos, Bajos B1–B12 corregidos |
+| 8 Documentación y cierre | ⏭️ **Siguiente** | Ver "Lo que las fases siguientes deben saber de la Fase 7" |
 
 ## Entorno (importante para cualquier agente)
 
 - Windows 11, PowerShell 5.1. **No hay PHP ni Composer en el host**: todo lo de PHP corre en el contenedor
   (`docker compose exec -T api php artisan …`, `./vendor/bin/pest`, `pint --test`, `phpstan analyse`).
-- Atajos: `.\make.ps1 up | test | lint | fresh | reset | eval` (Windows) o `make …`.
+- Atajos: `.\make.ps1 up | dev | test | lint | fresh | reset | eval | backup | restore <archivo>` (Windows) o `make …`.
+  Desde la Fase 7: `up` = stack tipo producción (lo del evaluador); `dev` = desarrollo (`docker-compose.dev.yml`);
+  `test`, `lint`, `eval` y `fresh` levantan `dev` solos si la API en ejecución no es la de desarrollo; `reset` borra
+  los volúmenes del proyecto y levanta `dev`.
 - En PowerShell 5.1 no uses `2>&1` con comandos nativos (convierte stderr en error); usa `2>$null`.
-- Proyecto compose `fartmar`. Puertos host: Postgres **55432**, API **8080**, frontend **5173**.
+- Proyecto compose `fartmar`. Puertos host: Nginx (SPA + API) **8080**, Postgres **127.0.0.1:55432**, Vite **5173**.
+  La API (PHP-FPM) ya no publica puerto; el proxy de Vite apunta a Nginx en 8080.
 - **No tocar contenedores Docker ajenos** del usuario (`trigra-dev-*`, `sonarqube-biotrust`, `cea-postgres`,
   `busy_moore`). Prohibido `prune`, `docker rm/rmi/stop/kill` de cosas ajenas (bloqueado en permisos).
 - Las pruebas usan la BD `fartmar_test`; `tests/TestCase.php` aborta si la BD no termina en `_test`.
@@ -48,6 +52,27 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+
+## Lo que las fases siguientes deben saber de la Fase 7
+
+- Operación en `docs/DEPLOY.md` y decisiones en S-99…S-118 (S-111…S-118 = revisión). Archivos: `backend/Dockerfile`,
+  `frontend/Dockerfile`, `docker/php/*`, `docker/nginx/*`, `docker-compose.yml`, `docker-compose.dev.yml`, `scripts/*`.
+- **Para el README (Fase 8):** comando único `cp .env.example .env && docker compose up -d --build --wait` →
+  http://localhost:8080 con usuarios demo (`password`); `make dev` para desarrollo; tabla de servicios; nota de que en
+  repos privados de cuentas gratuitas no hay revisores en environments (alternativa `workflow_dispatch` con
+  `confirm_production=DESPLEGAR`, ya en DEPLOY.md); que `ALLOW_GENERATED_KEYS` y `SEED_DEMO_DATA` son solo demo.
+- `fartmar_app` (rol de la API en el stack de producción) no tiene `TRUNCATE`, DDL ni `UPDATE/DELETE` en kardex y
+  bitácoras. Si una función nueva necesita otro permiso, actualizar `db:provision-app-role`: Pest corre como dueño y no
+  lo detecta.
+- Dev y demo usan volúmenes de BD distintos (`db_data_dev` / `db_data`); las llaves de dev viven en `backend/.env`, las
+  de la demo en el volumen `app_keys`.
+- **Pendiente de Daniel en GitHub (repo público):** crear el environment `production` con *Required reviewers*,
+  los secretos `SMOKE_EMAIL`/`SMOKE_PASSWORD` y la variable `PRODUCTION_REVIEWERS_CONFIGURED=true` (pasos en
+  DEPLOY.md). Sin la variable, un push a `main` no despliega; solo `workflow_dispatch` con `confirm_production=DESPLEGAR`.
+- El smoke test (`SMOKE_DEMO_CHECKS=true`) dispensa 1 unidad de la prescripción demo en cada corrida (S-114).
+- `UserSeeder` usa `firstOrCreate`: re-sembrar ya no repone la clave ni reactiva usuarios demo (S-111).
+- No se pudo verificar: ejecución real en GitHub Actions (bloqueo de facturación), la compuerta con `vars`, Trivy en
+  el runner, push a GHCR, `deploy.sh` con `DRY_RUN=0`, la CSP en un navegador real.
 
 ## Lo que las fases siguientes deben saber de la Fase 6
 
@@ -160,8 +185,8 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 ## Riesgos conocidos / deuda abierta
 
-- Triggers de solo inserción no bloquean `TRUNCATE` (necesario para pruebas). En producción: usuario de
-  BD no dueño de las tablas (documentar en DEPLOY.md, Fase 7).
+- ~~Triggers de solo inserción no bloquean `TRUNCATE`~~ **Resuelto en la Fase 7** para el stack de producción: la
+  API corre con `fartmar_app` (sin `TRUNCATE`, S-101). En desarrollo y pruebas se sigue usando el dueño.
 - Cambiar `APP_KEY` o `PATIENT_HASH_KEY` invalida documentos cifrados/hashes (sin rutina de re-cifrado).
 - Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
 
@@ -170,9 +195,9 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 Resueltos en la Fase 4: PII en logs de excepciones, correlation id, login fallido auditado, pacientes con
 enmascarado y bitácora, revocación de tokens, enumeración de correos por tiempo y primer login lento.
 
-- **[Alto · Fase 7] `APP_DEBUG=true` por defecto** en `docker-compose.yml` y `.env.example` (correcto para demo
-  local). La imagen/compose de producción debe forzar `APP_ENV=production` y `APP_DEBUG=false`; con debug activo
-  cualquier 500 no capturado expone SQL y host. El renderizador ya responde `ERROR_INTERNO` si debug está apagado (S-44).
+- ~~**[Alto] `APP_DEBUG=true` por defecto**~~ **Resuelto en la Fase 7:** la imagen de producción y
+  `docker-compose.yml` fijan `APP_ENV=production` y `APP_DEBUG=false` (no se leen del `.env`); solo el override de
+  desarrollo usa debug.
 - **[Medio] Riesgo residual del admin (S-77):** puede crear un médico o un regente, entrar una vez con la clave
   temporal y cambiarla. Queda auditado (`user.created` con el rol, `user.password_changed`), pero no se impide.
 - **[Bajo] Redacción de strings sin clave sensible** (`RedactSensitiveData`): solo enmascara correos dentro de textos
@@ -184,10 +209,11 @@ enmascarado y bitácora, revocación de tokens, enumeración de correos por tiem
 - **[Bajo] Enumeración de ids por rol sin permiso:** un médico recibe 404 por una dispensación inexistente y 403 por
   una existente (el binding resuelve antes de la Policy). Solo revela que el id existe, sin datos.
 - **[Bajo] Alcance por bodega** de `GET /dispensations/{id}` (S-42): cualquier personal de farmacia ve cualquier bodega.
-- **[Bajo · Fase 7] Headers de seguridad** (CSP, HSTS, `X-Content-Type-Options`, `X-Frame-Options`) en Nginx; hoy la
-  API corre con el servidor embebido de PHP.
-- Restos de Docker de la Fase 0 que Daniel puede borrar a mano si quiere:
-  `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`.
+- ~~**[Bajo] Headers de seguridad**~~ **Resuelto en la Fase 7** (S-104): CSP, `nosniff`, `X-Frame-Options`,
+  `Referrer-Policy`, `Permissions-Policy` en Nginx; HSTS documentado y comentado hasta que haya TLS.
+- Restos de Docker que Daniel puede borrar a mano si quiere (los permisos del agente bloquean `rmi`):
+  `docker volume rm fartmar_composer_cache` · `docker rmi fartmar-php-dev:local alpine:3 rhysd/actionlint:latest`
+  · de la Fase 7: `docker rmi fartmar-api:ci fartmar-web:ci` (etiquetas extra de las mismas imágenes).
 
 ## Documentos de referencia
 

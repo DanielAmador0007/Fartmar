@@ -1,9 +1,74 @@
-# Entorno de DESARROLLO (Fase 0).
-# Uso: cp .env.example .env && docker compose up -d --build   (o `make up`)
-# El frontend se ejecuta en el host con `npm run dev` (puerto 5173) y hace
-# proxy de /api hacia la API. Las imágenes de producción (php-fpm + nginx,
-# no root) y el servicio frontend se agregan en la fase de DevOps.
+# FARTMAR — stack completo tipo PRODUCCIÓN (lo que corre el evaluador).
+#
+#   cp .env.example .env && docker compose up -d --build --wait     (o: make up)
+#   -> http://localhost:8080  (SPA + API en el mismo origen)
+#
+# Servicios:
+#   db         PostgreSQL 16
+#   migrate    one-shot: migraciones + rol de BD de la app + semilla demo; termina
+#   api        Laravel en PHP-FPM (no root, sin puertos publicados)
+#   scheduler  php artisan schedule:work (sanctum:prune-expired diario)
+#   web        Nginx sin root: SPA + proxy FastCGI de /api, /health, /ready
+#
+# Desarrollo (código montado, dependencias dev, Pest, Larastan): se le suma
+# docker-compose.dev.yml (make dev). Ver docs/DEPLOY.md.
 name: fartmar
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Endurecimiento común de los contenedores propios (no aplica a Postgres, que
+# necesita capacidades para cambiar de usuario al arrancar).
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+# Entorno común de los contenedores PHP (migrate, api, scheduler). Los valores
+# fijos de ejecución (caché, sesión, cola, bcrypt, locale) están en el ENV de
+# la imagen de producción (backend/Dockerfile).
+x-app-env: &app-env
+  # Forzados: este stack nunca corre con debug (un 500 con debug expone SQL y host).
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_URL: http://localhost:${WEB_HOST_PORT:-8080}
+  # Secretos: del .env / gestor de secretos. Vacíos + ALLOW_GENERATED_KEYS=true
+  # = se generan una vez en el volumen app_keys (SOLO DEMO, S-102).
+  APP_KEY: ${APP_KEY:-}
+  PATIENT_HASH_KEY: ${PATIENT_HASH_KEY:-}
+  DB_CONNECTION: pgsql
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_DATABASE: ${POSTGRES_DB:-fartmar}
+  LOG_CHANNEL: json
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  SANCTUM_EXPIRATION: ${SANCTUM_EXPIRATION:-480}
+  # La SPA llega por el mismo origen (Nginx): sin orígenes CORS por defecto. El
+  # override de desarrollo agrega el Vite (http://localhost:5173).
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
+  ALERT_EXPIRY_DAYS: ${ALERT_EXPIRY_DAYS:-90}
+  # Asistente IA (config/assistant.php). LLM_API_KEY solo en el servicio api.
+  LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+  OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+  OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+  LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+  LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1024}
+  ASSISTANT_RATE_LIMIT_PER_MINUTE: ${ASSISTANT_RATE_LIMIT_PER_MINUTE:-10}
+
+x-api-image: &api-image
+  build:
+    context: ./backend
+    target: production
+    additional_contexts:
+      infra: ./docker
+  image: ${API_IMAGE:-fartmar-api:local}
 
 services:
   db:
@@ -14,10 +79,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env (cp .env.example .env)}
       TZ: UTC
     ports:
-      - "${DB_HOST_PORT:-55432}:5432"
+      # Solo en 127.0.0.1: la BD no queda expuesta a la red local.
+      - "127.0.0.1:${DB_HOST_PORT:-55432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-test-db.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -25,55 +90,131 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+    logging: *logging
+    networks: [data]
 
-  api:
-    build:
-      context: ./docker/php
-    image: fartmar-api-dev:local
+  # One-shot (como un Job de Kubernetes): se ejecuta en cada `up`, aplica lo
+  # pendiente y termina. La API no arranca hasta que termine bien, y con varias
+  # réplicas de la API nadie compite por migrar.
+  migrate:
+    <<: [*api-image, *hardening]
+    command: ["fartmar-migrate"]
     depends_on:
       db:
         condition: service_healthy
     environment:
-      APP_ENV: ${APP_ENV:-local}
-      APP_DEBUG: ${APP_DEBUG:-true}
-      APP_URL: http://localhost:${API_HOST_PORT:-8080}
-      DB_CONNECTION: pgsql
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_DATABASE: ${POSTGRES_DB:-fartmar}
+      <<: *app-env
+      # El dueño de las tablas (migraciones, DDL).
       DB_USERNAME: ${POSTGRES_USER:-fartmar}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-      # Logs JSON a stderr con correlation_id y redacción de datos personales.
-      LOG_CHANNEL: ${LOG_CHANNEL:-json}
-      # Asistente IA (config/assistant.php). LLM_API_KEY sin valor por defecto: viene del .env.
-      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      # Rol con el que corren api y scheduler (S-101).
+      DB_APP_USERNAME: ${DB_APP_USERNAME:-fartmar_app}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Defina DB_APP_PASSWORD en .env (cp .env.example .env)}
+      # true = el DBA crea el rol y su clave; migrate solo aplica GRANT/REVOKE (S-112).
+      DB_APP_ROLE_MANAGED_EXTERNALLY: ${DB_APP_ROLE_MANAGED_EXTERNALLY:-false}
+      ALLOW_GENERATED_KEYS: ${ALLOW_GENERATED_KEYS:-false}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    volumes:
+      - app_keys:/var/lib/fartmar
+    # El healthcheck de la imagen es para PHP-FPM; este servicio solo corre y termina.
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *logging
+    networks: [data]
+
+  api:
+    <<: [*api-image, *hardening]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      DB_USERNAME: ${DB_APP_USERNAME:-fartmar_app}
+      DB_PASSWORD: ${DB_APP_PASSWORD}
+      # Secreto del proveedor externo: solo lo necesita quien atiende /assistant.
       LLM_API_KEY: ${LLM_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
-      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
-      ASSISTANT_RATE_LIMIT_PER_MINUTE: ${ASSISTANT_RATE_LIMIT_PER_MINUTE:-10}
-      ALERT_EXPIRY_DAYS: ${ALERT_EXPIRY_DAYS:-90}
-      # servidor embebido de PHP con varios workers: permite peticiones simultáneas.
-      PHP_CLI_SERVER_WORKERS: 4
-      COMPOSER_CACHE_DIR: /tmp/composer-cache
-    # Linux: host.docker.internal no existe por defecto (Docker Desktop sí lo trae).
+    volumes:
+      - app_keys:/var/lib/fartmar:ro
+    # Linux: host.docker.internal no existe por defecto (Ollama en el host).
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      - "${API_HOST_PORT:-8080}:8080"
-    volumes:
-      - ./backend:/app
-      - composer-cache:/tmp/composer-cache
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ready > /dev/null || exit 1"]
+      test: ["CMD", "fartmar-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
-      # el primer arranque desde cero puede incluir `composer install`
-      start_period: 180s
+      start_period: 30s
+    # SIGQUIT = PHP-FPM termina las peticiones en curso antes de salir. El
+    # plazo cubre la petición más larga (asistente: request_terminate_timeout
+    # 150 s, S-110); después Docker envía SIGKILL.
+    stop_signal: SIGQUIT
+    stop_grace_period: 155s
     restart: unless-stopped
+    logging: *logging
+    # edge: lo alcanza Nginx; data: llega a Postgres.
+    networks: [edge, data]
+
+  scheduler:
+    <<: [*api-image, *hardening]
+    command: ["php", "artisan", "schedule:work"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      DB_USERNAME: ${DB_APP_USERNAME:-fartmar_app}
+      DB_PASSWORD: ${DB_APP_PASSWORD}
+    volumes:
+      - app_keys:/var/lib/fartmar:ro
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "schedule:work"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # schedule:work lanza procesos hijos: tini reenvía señales y recoge zombis.
+    init: true
+    stop_signal: SIGTERM
+    restart: unless-stopped
+    logging: *logging
+    networks: [data]
+
+  web:
+    <<: *hardening
+    build:
+      context: ./frontend
+      target: production
+      additional_contexts:
+        infra: ./docker
+    image: ${WEB_IMAGE:-fartmar-web:local}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging: *logging
+    # Solo edge: Nginx no tiene ruta hacia Postgres.
+    networks: [edge]
+
+# Dos redes: edge (web, api) y data (api, migrate, scheduler, db).
+networks:
+  edge:
+  data:
 
 volumes:
   db_data:
-  composer-cache:
+  # Llaves generadas en modo demo (ALLOW_GENERATED_KEYS=true). Viven y mueren
+  # con db_data: `down -v` borra ambos y no quedan datos cifrados con una llave perdida.
+  app_keys:

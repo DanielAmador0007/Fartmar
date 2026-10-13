@@ -1,7 +1,8 @@
 #!/bin/sh
-# Entrypoint de DESARROLLO de la API.
-# Deja el contenedor listo desde un clon limpio: dependencias, .env, APP_KEY,
-# espera a la BD y aplica migraciones. Idempotente: se puede reiniciar sin efectos.
+# Entrypoint de DESARROLLO de la API (target `dev` de backend/Dockerfile, con
+# el código montado desde ./backend). Lo usa docker-compose.dev.yml.
+# Deja el contenedor listo desde un clon limpio: dependencias, backend/.env y
+# APP_KEY. Idempotente: se puede reiniciar sin efectos.
 set -eu
 
 cd /app
@@ -16,35 +17,25 @@ if [ ! -f .env ]; then
     cp .env.example .env
 fi
 
+# En desarrollo las llaves viven en backend/.env (montado), así las ven
+# también los `docker compose exec api php artisan ...`. Una variable vacía
+# que llega desde compose taparía la de backend/.env: se elimina.
+for name in APP_KEY PATIENT_HASH_KEY; do
+    eval "current=\${$name:-}"
+    if [ -z "$current" ]; then
+        unset "$name"
+    fi
+done
+
 # APP_KEY: si no viene por entorno ni está en .env, se genera (SOLO DEMO; en
 # producción la clave se inyecta como secreto y nunca se regenera).
 if [ -z "${APP_KEY:-}" ] && ! grep -q '^APP_KEY=base64:' .env; then
-    echo "[entrypoint] Generando APP_KEY (solo demo)"
+    echo "[entrypoint] Generando APP_KEY en backend/.env (solo desarrollo)"
     php artisan key:generate --force --no-interaction
 fi
 
-echo "[entrypoint] Esperando a PostgreSQL en ${DB_HOST}:${DB_PORT}..."
-attempts=0
-until php -r '
-    try {
-        new PDO(
-            sprintf("pgsql:host=%s;port=%s;dbname=%s", getenv("DB_HOST"), getenv("DB_PORT"), getenv("DB_DATABASE")),
-            getenv("DB_USERNAME"),
-            getenv("DB_PASSWORD"),
-        );
-    } catch (Throwable $e) {
-        exit(1);
-    }
-'; do
-    attempts=$((attempts + 1))
-    if [ "$attempts" -ge 30 ]; then
-        echo "[entrypoint] PostgreSQL no respondió tras 30 intentos" >&2
-        exit 1
-    fi
-    sleep 1
-done
-
-echo "[entrypoint] Aplicando migraciones"
-php artisan migrate --force --no-interaction
+if [ "${1:-}" = "fartmar-migrate" ]; then
+    exec /usr/local/bin/fartmar-migrate
+fi
 
 exec "$@"

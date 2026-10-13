@@ -1,0 +1,33 @@
+# Contexto de backend/Dockerfile. La imagen de producción no lleva
+# dependencias de desarrollo, pruebas, secretos ni cachés locales.
+.git
+.env
+.env.*
+!.env.example
+vendor
+node_modules
+
+# Pruebas y herramientas de calidad (el eval y Pest corren en CI / dev)
+tests
+phpunit.xml
+phpstan.neon
+pint.json
+.phpunit.cache
+.phpunit.result.cache
+
+# Cachés generadas en desarrollo (la imagen genera las suyas)
+bootstrap/cache/*.php
+storage/logs/*
+!storage/logs/.gitignore
+storage/framework/cache/*
+!storage/framework/cache/.gitignore
+storage/framework/sessions/*
+!storage/framework/sessions/.gitignore
+storage/framework/testing/*
+!storage/framework/testing/.gitignore
+storage/framework/views/*
+!storage/framework/views/.gitignore
+
+Dockerfile
+.dockerignore
+*.log
