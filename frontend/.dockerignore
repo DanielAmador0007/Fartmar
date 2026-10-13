@@ -1,0 +1,11 @@
+# Contexto de frontend/Dockerfile: la imagen instala sus propias dependencias
+# (npm ci) y genera su propio dist/.
+node_modules
+dist
+coverage
+.env
+.env.*
+*.log
+.vite
+Dockerfile
+.dockerignore
