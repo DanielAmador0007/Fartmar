@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AssistantAnswer, Role } from '../../api/types'
 import { apiError, mockApi, type MockReply } from '../../test/http'
 import { makeUser, meRoute, renderApp } from '../../test/render'
@@ -249,5 +249,25 @@ describe('Asistente IA: acceso por rol', () => {
     expect(within(nav).queryByRole('link', { name: 'Asistente' })).not.toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent('No tienes permiso para ver esta sección.')
     expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument()
+  })
+})
+
+describe('Asistente IA: claves de fila', () => {
+  it('dos productos con el mismo número de lote en la misma bodega no repiten la key', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rows = [
+      { warehouse: central, product: ace, lot_number: 'L-2401', expires_at: '2026-11-01', days_to_expire: 20, quantity: 5 },
+      { warehouse: central, product: ibu, lot_number: 'L-2401', expires_at: '2026-11-02', days_to_expire: 21, quantity: 7 },
+    ]
+    setup(ok(answer({ result: { tool: 'get_expiring_lots', filters: { days: 60 }, count: 2, truncated: false, rows } })))
+
+    await userEvent.type(await questionBox(), QUESTION)
+    await userEvent.click(screen.getByRole('button', { name: 'Preguntar' }))
+
+    const table = await screen.findByRole('table', { name: 'Lotes por vencer' })
+    expect(within(table).getByText('Acetaminofén 500 mg')).toBeInTheDocument()
+    expect(within(table).getByText('Ibuprofeno 400 mg')).toBeInTheDocument()
+    expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false)
+    errors.mockRestore()
   })
 })

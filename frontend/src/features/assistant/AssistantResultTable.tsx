@@ -57,7 +57,7 @@ function renderTable(result: AssistantResult) {
           </thead>
           <tbody>
             {result.rows.map((r) => (
-              <tr key={`${r.warehouse.code}-${r.lot_number}`} className={r.is_expired ? 'expiry-expired' : undefined}>
+              <tr key={`${r.warehouse.code}-${r.product.id}-${r.lot_number}`} className={r.is_expired ? 'expiry-expired' : undefined}>
                 <td>{r.warehouse.name}</td>
                 <td>{r.product.name}</td>
                 <td>{r.lot_number}</td>
@@ -87,7 +87,7 @@ function renderTable(result: AssistantResult) {
           </thead>
           <tbody>
             {result.rows.map((r) => (
-              <tr key={`${r.warehouse.code}-${r.lot_number}`}>
+              <tr key={`${r.warehouse.code}-${r.product.id}-${r.lot_number}`}>
                 <td>{r.warehouse.name}</td>
                 <td>{r.product.name}</td>
                 <td>{r.lot_number}</td>
