@@ -55,7 +55,10 @@ fi
 # con esa configuración.
 if [ -z "${COMPOSE:-}" ]; then
     api_id=$(docker compose ps -q api 2>/dev/null || true)
-    api_image=$( [ -n "$api_id" ] && docker inspect -f '{{.Config.Image}}' "$api_id" 2>/dev/null || true)
+    api_image=""
+    if [ -n "$api_id" ]; then
+        api_image=$(docker inspect -f '{{.Config.Image}}' "$api_id" 2>/dev/null || true)
+    fi
     case "$api_image" in
         fartmar-api-dev:*) COMPOSE="$DEV_COMPOSE" ;;
         "")
