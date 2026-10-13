@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-13, al cerrar la Fase 7.
+> Última actualización: 2026-10-13, al cerrar la Fase 8.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -28,8 +28,19 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 4 Seguridad y privacidad | ✅ Hecha (mergeada con el PR #3) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
 | 5 Frontend | ✅ Hecha (PR #3, mergeado) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
 | 6 Asistente IA | ✅ Hecha (PR `feat/fase-6-asistente-ia`) | `LlmProvider` mock/ollama/anthropic por `LLM_PROVIDER`, 7 herramientas de solo lectura con Policies, filtros de entrada/salida, notas de traslados nunca enviadas al modelo, `POST /assistant/query`, `assistant:eval` 18/18 con mock, pantalla del asistente; 917 Pest (3875 aserciones), 121 Vitest; revisor-senior sin Críticos, Alto y Medios corregidos; supuestos S-89…S-98; OpenAPI 0.6.1 |
-| 7 DevOps completo | ✅ Hecha (rama `feat/fase-7-devops`, sin push) | Imágenes multi-stage sin root (PHP-FPM + Nginx con la SPA), compose tipo producción con `migrate` one-shot y `scheduler`, redes `edge`/`data`, override de desarrollo, rol de BD sin `TRUNCATE` (gestionable por el DBA), `TRUSTED_PROXIES`, headers de seguridad, logs JSON de Nginx, respaldo/restauración probados, smoke con escrituras como `fartmar_app`, CI con acciones por SHA, Trivy, auditorías y compuerta de producción, `docs/DEPLOY.md`; 931 Pest (3935 aserciones), 121 Vitest, eval 18/18; supuestos S-99…S-118. Revisor-senior: Altos y Medios corregidos, Bajos B1–B12 corregidos |
-| 8 Documentación y cierre | ⏭️ **Siguiente** | Ver "Lo que las fases siguientes deben saber de la Fase 7" |
+| 7 DevOps completo | ✅ Hecha (PR #5, mergeado; shellcheck en PR #6) | Imágenes multi-stage sin root (PHP-FPM + Nginx con la SPA), compose tipo producción con `migrate` one-shot y `scheduler`, redes `edge`/`data`, override de desarrollo, rol de BD sin `TRUNCATE` (gestionable por el DBA), `TRUSTED_PROXIES`, headers de seguridad, logs JSON de Nginx, respaldo/restauración probados, smoke con escrituras como `fartmar_app`, CI con acciones por SHA, Trivy, auditorías y compuerta de producción, `docs/DEPLOY.md`; 931 Pest (3935 aserciones), 121 Vitest, eval 18/18; supuestos S-99…S-118. Revisor-senior: Altos y Medios corregidos, Bajos B1–B12 corregidos |
+| 8 Documentación y cierre | ✅ Hecha (rama `feat/fase-8-docs`) | README (un comando, mapa RN → código/BD/pruebas, trade-offs, qué quedó fuera), OpenAPI 0.7.0 válido con redocly, `AI_USAGE.draft.md`, `docs/SUSTENTACION.md`, DEPLOY.md a una página (403 palabras). Arreglos de la revisión final: RN-01 en BD para dispensación (`dispensation_item_lots_check_lot` + `business_today()`), eval en `database/assistant/eval.json` (corre en el stack de producción) y robusto a la demo; supuesto S-119. 937 Pest (3950 aserciones), eval 18/18; smoke 14/14 sobre un clon limpio con `docker compose up -d --build --wait` |
+| — Entrega | ⏳ Pendiente de Daniel | Ver "Pendientes de Daniel para entregar" |
+
+## Pendientes de Daniel para entregar
+
+1. Escribir `AI_USAGE.md` con sus palabras a partir de `AI_USAGE.draft.md` (bloques `DANIEL`); el README ya lo enlaza.
+2. Crear el environment `production` con *Required reviewers* en GitHub (README, "CI/CD: configurar la aprobación
+   de producción") y lanzar un despliegue aprobado para dejar evidencia.
+3. Decidir si `docs/SUSTENTACION.md`, `LEEME_KIT.md` y `PROMPT_ORQUESTADOR.md` quedan en el repo entregado (el
+   revisor advierte que una guía con respuestas preparadas puede restar en autoría percibida) o se declaran en AI_USAGE.
+4. Fusionar el PR de la Fase 8 en `main` y verificar el README en la web de GitHub.
+5. Antes de la sustentación: `make fresh` si pasaron semanas desde la siembra (fechas de lotes relativas).
 
 ## Entorno (importante para cualquier agente)
 
@@ -50,8 +61,9 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 ## Bloqueos externos
 
-- **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
-  issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+- ~~GitHub Actions no corre (bloqueo de facturación).~~ **Resuelto:** el run 38434686392 de `main` pasó en verde
+  (8 jobs, incluidos Trivy, staging simulado y GHCR). Pendiente de Daniel: crear el environment `production` con
+  revisores (README, "CI/CD: configurar la aprobación de producción"); hasta entonces producción queda *skipped*.
 
 ## Lo que las fases siguientes deben saber de la Fase 7
 
@@ -82,14 +94,13 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   - Variables nuevas en `.env.example` y compose: `LLM_PROVIDER` (default `mock`), `OLLAMA_URL`, `OLLAMA_MODEL`,
     `LLM_API_KEY` (nunca en el repo), `ANTHROPIC_MODEL`, `LLM_TIMEOUT`, `LLM_MAX_TOKENS`. El compose tiene `extra_hosts` para
     `host.docker.internal` (Ollama en el host).
-  - El eval lee `backend/tests/Assistant/eval.json`: si la imagen de producción excluye `tests/`, mover el archivo o
-    correr el eval desde la imagen de CI. Agregar `php artisan assistant:eval` al pipeline (sobre BD recién sembrada;
-    el comando avisa si la semilla fue modificada).
+  - (Resuelto en la revisión final, A1) El eval lee `backend/database/assistant/eval.json`, que va en la imagen de
+    producción; corre en CI sobre BD recién sembrada y también con `docker compose exec -T api php artisan assistant:eval`.
 - Proveedores reales sin probar en vivo: Ollama no está instalado en el host y Anthropic solo se probó con
   `Http::fake`. Un nombre propio escrito en la pregunta no se detecta (S-92): con proveedor externo saldría de la IPS.
 - Bajos abiertos: nombres de bodega/producto (editables por admin) no van marcados como no confiables (L1); el mock no
   entiende sinónimos ("paracetamol"); el filtro de entrada rechaza lotes numéricos de ≥ 7 dígitos.
-- En la BD de desarrollo el eval da 17/18 porque la demo de la Fase 5 dispensó L-ACE-2402; `make fresh` lo restablece.
+- (Resuelto en la revisión final, M5) El eval ya no depende de las cantidades de la semilla: da 18/18 también tras la demo.
 
 ## Lo que las fases siguientes deben saber de la Fase 5
 
@@ -188,7 +199,6 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - ~~Triggers de solo inserción no bloquean `TRUNCATE`~~ **Resuelto en la Fase 7** para el stack de producción: la
   API corre con `fartmar_app` (sin `TRUNCATE`, S-101). En desarrollo y pruebas se sigue usando el dueño.
 - Cambiar `APP_KEY` o `PATIENT_HASH_KEY` invalida documentos cifrados/hashes (sin rutina de re-cifrado).
-- Falta `README.md` (Fase 8): pasar ahí las credenciales demo y los comandos.
 
 ### Pendientes de seguridad abiertos (revisiones de las Fases 2 y 4)
 

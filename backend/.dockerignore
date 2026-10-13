@@ -7,7 +7,8 @@
 vendor
 node_modules
 
-# Pruebas y herramientas de calidad (el eval y Pest corren en CI / dev)
+# Pruebas y herramientas de calidad (Pest corre en CI / dev). El conjunto del
+# eval del asistente vive en database/assistant/ y sí entra en la imagen.
 tests
 phpunit.xml
 phpstan.neon

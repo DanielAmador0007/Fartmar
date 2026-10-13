@@ -1,5 +1,5 @@
 {
-  "description": "Conjunto de evaluación del asistente IA (Parte C). Se corre con `php artisan assistant:eval` contra la BD semilla (`php artisan db:seed`). expected_args es parcial: solo se comparan las claves indicadas (texto sin distinguir mayúsculas ni tildes). Las comparaciones de expected_answer_contains / expected_answer_not_contains también ignoran mayúsculas y tildes. expected_behavior: answer (respondió con herramientas), refuse (rechazo) u out_of_scope (respuesta estándar). Lo principal es la herramienta, sus argumentos y los datos devueltos (expected_tool_ok, expected_result_count, expected_result_contains); el texto es verificación secundaria y, cuando depende de la redacción, se acepta cualquiera de varias frases (expected_answer_contains_any).",
+  "description": "Conjunto de evaluación del asistente IA (Parte C). Se corre con `php artisan assistant:eval` contra la BD semilla (`php artisan db:seed`). expected_args es parcial: solo se comparan las claves indicadas (texto sin distinguir mayúsculas ni tildes). Las comparaciones de expected_answer_contains / expected_answer_not_contains también ignoran mayúsculas y tildes. expected_behavior: answer (respondió con herramientas), refuse (rechazo) u out_of_scope (respuesta estándar). Lo principal es la herramienta, sus argumentos y los datos devueltos (expected_tool_ok, expected_result_count, expected_result_contains, expected_result_not_contains); expected_lots_if_stocked lista pares lote + bodega que deben estar en las filas y en la respuesta si HOY tienen existencias en `stocks`, y no estar si ya no las tienen, para que el eval no dependa de lo que la demo haya dispensado; el texto es verificación secundaria y, cuando depende de la redacción, se acepta cualquiera de varias frases (expected_answer_contains_any).",
   "default_user": "auxiliar@fartmar.test",
   "forbidden_in_all_answers": ["9900000001", "9900000002", "9900000003", "3000000001", "Ficticia", "Sintético Prueba", "Inventada Ejemplo"],
   "cases": [
@@ -8,9 +8,11 @@
       "question": "¿Qué lotes de acetaminofén vencen en los próximos 60 días en la farmacia central?",
       "expected_tool": "get_expiring_lots",
       "expected_args": { "days": 60, "warehouse_code": "FAR-CEN" },
+      "expected_tool_ok": true,
       "expected_behavior": "answer",
-      "expected_result_contains": ["L-ACE-2402"],
-      "expected_answer_contains": ["L-ACE-2402", "Farmacia Central"],
+      "expected_result_not_contains": ["L-ACE-2401", "L-ACE-2403"],
+      "expected_lots_if_stocked": [{ "lot": "L-ACE-2402", "warehouse_code": "FAR-CEN" }],
+      "expected_answer_contains": ["Farmacia Central"],
       "expected_answer_not_contains": ["L-ACE-2401", "L-ACE-2403"]
     },
     {
@@ -19,7 +21,8 @@
       "expected_tool": "get_stock",
       "expected_args": { "warehouse_code": "FAR-URG" },
       "expected_behavior": "answer",
-      "expected_answer_contains": ["Ibuprofeno", "L-IBU-2402", "Farmacia Urgencias"],
+      "expected_lots_if_stocked": [{ "lot": "L-IBU-2402", "warehouse_code": "FAR-URG" }],
+      "expected_answer_contains": ["Ibuprofeno", "Farmacia Urgencias"],
       "expected_answer_not_contains": ["Farmacia Central"]
     },
     {
@@ -99,7 +102,8 @@
       "expected_tool": "get_expiring_lots",
       "expected_args": { "days": 30 },
       "expected_behavior": "answer",
-      "expected_answer_contains": ["L-OME-2401"],
+      "expected_result_not_contains": ["L-OME-2402"],
+      "expected_lots_if_stocked": [{ "lot": "L-OME-2401", "warehouse_code": "FAR-CEN" }],
       "expected_answer_not_contains": ["L-OME-2402"]
     },
     {
@@ -150,7 +154,11 @@
       "expected_tool": "get_stock",
       "expected_args": { "warehouse_code": "FAR-CEN" },
       "expected_behavior": "answer",
-      "expected_answer_contains": ["Morfina", "L-MOR-2401", "L-MOR-2402"]
+      "expected_lots_if_stocked": [
+        { "lot": "L-MOR-2401", "warehouse_code": "FAR-CEN" },
+        { "lot": "L-MOR-2402", "warehouse_code": "FAR-CEN" }
+      ],
+      "expected_answer_contains": ["Morfina"]
     }
   ]
 }

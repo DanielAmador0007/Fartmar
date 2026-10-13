@@ -9,12 +9,13 @@ use App\Domain\Assistant\Text;
 use App\Domain\Exceptions\AssistantUnavailableException;
 use App\Enums\KardexType;
 use App\Models\KardexMovement;
+use App\Models\Stock;
 use App\Models\User;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Corre el conjunto de evaluación del asistente (tests/Assistant/eval.json)
+ * Corre el conjunto de evaluación del asistente (database/assistant/eval.json)
  * contra la BD actual (la de desarrollo con datos semilla) y reporta una
  * tabla con cada caso y el porcentaje de aciertos. Termina con código 1 si
  * queda por debajo del umbral, para usarlo en CI.
@@ -25,20 +26,22 @@ use Illuminate\Support\Facades\Log;
  * Un caso acierta si se cumple TODO lo que declara: comportamiento
  * (answer/refuse/out_of_scope), herramienta usada con los argumentos
  * esperados (parcial), textos que debe y no debe contener la respuesta, y
- * ningún dato personal de la lista global.
+ * ningún dato personal de la lista global. Los casos de inventario no fijan
+ * cantidades: con expected_lots_if_stocked se exige que un lote aparezca
+ * solo si hoy tiene existencias, así la demo no rompe el eval (M5).
  */
 class AssistantEvalCommand extends Command
 {
     protected $signature = 'assistant:eval
         {--provider=mock : Proveedor a evaluar (mock, ollama, anthropic)}
         {--threshold= : Porcentaje mínimo de aciertos (por defecto ASSISTANT_EVAL_THRESHOLD)}
-        {--file= : Ruta del conjunto de evaluación (por defecto tests/Assistant/eval.json)}';
+        {--file= : Ruta del conjunto de evaluación (por defecto database/assistant/eval.json)}';
 
     protected $description = 'Evalúa el asistente IA con el conjunto de preguntas y reporta los aciertos';
 
     public function handle(LlmProviderFactory $factory): int
     {
-        $path = (string) ($this->option('file') ?: base_path('tests/Assistant/eval.json'));
+        $path = (string) ($this->option('file') ?: base_path('database/assistant/eval.json'));
         $suite = is_file($path) ? json_decode((string) file_get_contents($path), true) : null;
         if (! is_array($suite) || ! is_array($suite['cases'] ?? null) || $suite['cases'] === []) {
             $this->error("No se pudo leer el conjunto de evaluación: {$path}");
@@ -170,6 +173,13 @@ class AssistantEvalCommand extends Command
                 $failures[] = "result sin \"{$needle}\"";
             }
         }
+        foreach ((array) ($case['expected_result_not_contains'] ?? []) as $needle) {
+            if (str_contains($resultText, Text::normalize((string) $needle))) {
+                $failures[] = "result con \"{$needle}\"";
+            }
+        }
+
+        $failures = [...$failures, ...$this->checkStockedLots($case, $answer, $text)];
 
         // Texto de la respuesta: verificación secundaria.
         foreach ((array) ($case['expected_answer_contains'] ?? []) as $needle) {
@@ -187,6 +197,50 @@ class AssistantEvalCommand extends Command
         foreach ([...(array) ($case['expected_answer_not_contains'] ?? []), ...$forbidden] as $needle) {
             if (str_contains($text, Text::normalize((string) $needle))) {
                 $failures[] = "contiene \"{$needle}\"";
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * expected_lots_if_stocked: [{"lot": "L-ACE-2402", "warehouse_code": "FAR-CEN"}, ...]
+     *
+     * Verificación independiente del estado de la demo (M5): se mira en
+     * `stocks` si el lote tiene unidades en esa bodega AHORA. Si las tiene,
+     * debe aparecer en las filas del resultado (par lote + bodega) y en la
+     * respuesta; si ya no las tiene (p. ej., la demo lo dispensó), NO debe
+     * aparecer en las filas. Así el caso sigue exigiendo que la herramienta
+     * devuelva lo que hay, sin fijar cantidades que cambian con la demo.
+     *
+     * @param  array<string, mixed>  $case
+     * @return list<string>
+     */
+    private function checkStockedLots(array $case, AssistantAnswer $answer, string $text): array
+    {
+        $failures = [];
+        $rows = is_array($answer->result['rows'] ?? null) ? $answer->result['rows'] : [];
+
+        foreach ((array) ($case['expected_lots_if_stocked'] ?? []) as $expected) {
+            $lot = (string) ($expected['lot'] ?? '');
+            $warehouse = (string) ($expected['warehouse_code'] ?? '');
+
+            $stocked = Stock::query()
+                ->where('quantity', '>', 0)
+                ->whereHas('lot', fn ($q) => $q->where('lot_number', $lot))
+                ->whereHas('warehouse', fn ($q) => $q->where('code', $warehouse))
+                ->exists();
+
+            $inRows = array_filter($rows, fn ($row) => is_array($row)
+                && ($row['lot_number'] ?? null) === $lot
+                && ($row['warehouse']['code'] ?? null) === $warehouse) !== [];
+
+            if ($stocked && ! $inRows) {
+                $failures[] = "result sin {$lot} en {$warehouse} (tiene existencias)";
+            } elseif ($stocked && ! str_contains($text, Text::normalize($lot))) {
+                $failures[] = "falta \"{$lot}\" (tiene existencias en {$warehouse})";
+            } elseif (! $stocked && $inRows) {
+                $failures[] = "result con {$lot} en {$warehouse} (sin existencias)";
             }
         }
 

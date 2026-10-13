@@ -4,6 +4,7 @@
 | Constraints de prescripciones y dispensaciones (RN-04, RN-05, RN-09).
 */
 
+use App\Domain\Inventory\BusinessDate;
 use App\Models\Lot;
 use App\Models\Patient;
 use App\Models\Prescription;
@@ -362,4 +363,38 @@ it('líneas y lotes de dispensación: producto coherente, sin duplicados y canti
 
     DB::table('dispensation_item_lots')->insert($lotRow + ['quantity' => 2]);
     expectDbRejects(fn () => DB::table('dispensation_item_lots')->insert($lotRow + ['quantity' => 1]), 'dispensation_item_lots_dispensation_item_id_lot_id_unique');
+});
+
+it('RN-01 en BD: no se puede dispensar un lote vencido (ni ayer); el que vence hoy sí', function () {
+    $prescription = Prescription::factory()->create();
+    $item = PrescriptionItem::factory()->create(['prescription_id' => $prescription->id]);
+    $dispensationItemId = DB::table('dispensation_items')->insertGetId(
+        dispensationItemRow(insertDispensation($prescription), $item, 3),
+    );
+    $product = Product::query()->findOrFail($item->product_id);
+    $lotRow = fn (Lot $lot): array => [
+        'dispensation_item_id' => $dispensationItemId,
+        'lot_id' => $lot->id,
+        'product_id' => $lot->product_id,
+        'quantity' => 1,
+    ];
+
+    expectDbRejects(
+        fn () => DB::table('dispensation_item_lots')->insert($lotRow(Lot::factory()->for($product)->expiresInDays(-1)->create())),
+        'dispensation_item_lots_check_lot',
+    );
+    expectDbRejects(
+        fn () => DB::table('dispensation_item_lots')->insert($lotRow(Lot::factory()->for($product)->expiresInDays(-400)->create())),
+        'no se puede dispensar (RN-01)',
+    );
+
+    // Límite: vence HOY (Bogotá) todavía es válido (vencido = expires_at < hoy).
+    DB::table('dispensation_item_lots')->insert($lotRow(Lot::factory()->for($product)->expiresInDays(0)->create()));
+    DB::table('dispensation_item_lots')->insert($lotRow(Lot::factory()->for($product)->expiresInDays(30)->create()));
+    expect(DB::table('dispensation_item_lots')->where('dispensation_item_id', $dispensationItemId)->count())->toBe(2);
+});
+
+it('S-65: business_today() de la BD coincide con el "hoy" de Bogotá de la aplicación', function () {
+    expect(DB::selectOne('SELECT business_today()::text AS today')->today)
+        ->toBe(BusinessDate::today()->toDateString());
 });

@@ -647,3 +647,67 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - `apk upgrade` hace que dos construcciones en días distintos puedan diferir en paquetes del sistema.
   - DEPLOY.md quedó en unas 760 palabras (algo más de una página) por los pasos de configuración que pidió la revisión.
   - El `umask 077` no se puede observar en NTFS desde Git Bash (los permisos se emulan); en Linux aplica.
+
+### 2026-10-13 — Fase 8: README, OpenAPI 0.7.0, borrador de AI_USAGE y guía de sustentación
+- Agente: documentador
+- Qué generó la IA:
+  - `README.md`: arranque en un comando (bash y PowerShell), servicios y puertos, usuarios demo por rol, `make test/lint/eval/test-concurrency`, arquitectura, ER resumido, tabla RN-01…RN-11 → código / BD / pruebas (rutas verificadas con Grep), 8 decisiones con alternativa descartada y costo, supuestos principales, asistente IA, seguridad, librerías y "qué quedó fuera".
+  - `docs/openapi.yaml` 0.7.0: `redocly lint` daba 6 errores (5 `nullable` de OpenAPI 3.0 en un documento 3.1 y un `description` sin comillas que YAML partía en dos claves dentro de un mapa en flujo, en `tools_used.ok`). Corregidos; además `operationId` derivado del nombre de ruta de Laravel, el header `X-Correlation-Id` del cliente y los headers de correlación en las respuestas compartidas (antes eran componentes sin usar), descripciones de tags y las sondas `/health` y `/ready`. Sin cambios de contrato. Comparado con `route:list`: 35/35 operaciones.
+  - `AI_USAGE.draft.md` (no `AI_USAGE.md`): herramientas, agentes y tareas desde este log; candidatos de ejemplos aceptados y corregidos marcados como "no implican que Daniel los revisó", y bloques `<!-- DANIEL: … -->` / `[DANIEL: completar]`.
+  - `docs/SUSTENTACION.md`: guion por pesos de la rúbrica, demo paso a paso (A–G), demostración de concurrencia, 22 preguntas con `archivo:línea`, 7 cambios en vivo con archivos y pruebas.
+- Qué decisión tomó y por qué:
+  - Para la demo FEFO multi-lote se usa una prescripción nueva del médico (60 de acetaminofén): con la semilla, ninguna dispensación sembrada cruza dos lotes; así además se ve el lote vencido `L-ACE-2401` excluido.
+  - Se verificó en vivo lo que dice la guía: el script PowerShell de idempotencia (201 → 200 con `Idempotent-Replayed: true` → 409 con otro cuerpo), el `UPDATE` del kardex rechazado por el trigger, la consulta de `patient_access_logs`, `make eval` (18/18) y el grupo de concurrencia (20/20). Mutación: al quitar los dos `FOR UPDATE` de `StockService` (líneas 56 y 163), la prueba de la última unidad da `OK=1, CHECK_VIOLATION=7` en vez de `STOCK_INSUFICIENTE=7`: no hay sobreventa (el CHECK la frena) pero el usuario vería un error técnico. Se revirtió con `git checkout`.
+  - El README no declara que CI esté corriendo en GitHub: PROGRESO registra el bloqueo de facturación durante el desarrollo y no se pudo consultar el estado actual (`gh` sin sesión); se redactó como "no verificado" y se remite a la pestaña *Actions*.
+  - Librerías: no hay dependencias fuera del stack; se documentan las del stack con su motivo y las descartadas a propósito (axios, MSW, librerías de UI/formularios, generación de tipos desde OpenAPI).
+- Puntos que Daniel debe revisar/entender:
+  - Escribir con sus palabras las secciones marcadas de `AI_USAGE.draft.md` y renombrarlo a `AI_USAGE.md`; no copiar como propios los candidatos si no participó en esas decisiones.
+  - Ensayar a mano los cambios en vivo de `docs/SUSTENTACION.md` §6 (en especial el aviso de 6.1: un `ALERT_EXPIRY_DAYS` distinto en el `.env` de desarrollo también lo ve Pest).
+  - Las referencias `archivo:línea` de la guía corresponden a este commit.
+- Riesgos o cosas que podrían estar mal:
+  - Para verificar el script de idempotencia se dispensó 1 unidad (y se hizo una búsqueda de paciente) en la BD de **desarrollo**; `make fresh` la repone. El eval sigue en 18/18 sobre esa BD.
+  - Quedan 6 advertencias de `redocly lint` aceptadas: sin `license`, servidores en `localhost` (es la demo) y sondas sin respuesta 4xx.
+  - Inconsistencias vistas y no corregidas (fuera de alcance): la cabecera de `frontend/src/api/types.ts` cita OpenAPI 0.6.0; S-05 dice que desarrollo usa el servidor embebido de PHP (desde la Fase 7 es PHP-FPM); `docs/PROGRESO.md` aún marca la Fase 8 como siguiente y dice que falta el README; `docs/DEPLOY.md` pasa de una página.
+
+### 2026-10-13 — Revisión final: RN-01 en BD para dispensación (M1), eval en producción (A1) y eval robusto a la demo (M5)
+- Agente: desarrollador backend (Claude Code)
+- Qué generó la IA:
+  - Migración `2026_10_13_100000_add_dispensation_lot_expiry_guard.php`: función SQL `business_today()` (fecha de Bogotá, único lugar del SQL con la zona, S-65), trigger `BEFORE INSERT` `dispensation_item_lots_check_lot` que rechaza lotes con `expires_at < business_today()`, y `transfer_item_lots_check_lot` redefinido para usar la misma función. `down()` restaura la versión anterior.
+  - `ApiErrorRenderer` mapea el trigger nuevo a 422 `LOTE_VENCIDO`. Pruebas en `DispensingConstraintsTest` (INSERT directo de lote vencido falla; el que vence hoy y uno vigente pasan; `business_today()` = `BusinessDate::today()`).
+  - `git mv` del conjunto del eval a `backend/database/assistant/eval.json`; comando, prueba, CI (verifica que la imagen lleve el conjunto y no `tests/`), `.dockerignore`, `docs/asistente-ia.md` y supuestos S-96/S-105.
+  - Campos nuevos del eval: `expected_lots_if_stocked` (par lote + bodega: debe estar en las filas y en la respuesta si HOY tiene existencias en `stocks`, y no estar si no las tiene) y `expected_result_not_contains`. Aplicados a C01, C02, C12 y C18.
+- Qué decisión tomó y por qué:
+  - Flujo en palabras simples: al dispensar, la app ya elige lotes por FEFO sin vencidos; ahora, además, cuando se guarda "de qué lote salió", la BD revisa la fecha del lote contra el "hoy" de Bogotá y, si está vencido, rechaza la fila y toda la transacción se deshace (no se descuenta stock ni se escribe kardex).
+  - Crear `business_today()` en vez de copiar `now() AT TIME ZONE 'America/Bogota'` en el trigger nuevo: así la zona queda en un solo sitio del SQL. No hacía falta un permiso nuevo para `fartmar_app` (EXECUTE es de PUBLIC por defecto y la función solo lee `lots`); se comprobó en el stack de producción con `SET ROLE fartmar_app` dentro de una transacción revertida.
+  - Solo `INSERT`: una entrega pasada no se invalida porque el lote venza después.
+  - El eval no fija existencias: la demo A agota `L-ACE-2402` en Farmacia Central y la respuesta "no hay lotes" es correcta para esos datos. El caso ahora compara con `stocks` en el momento del eval. Los casos de seguridad, inyección y fuera de alcance no cambiaron. El aviso de semilla modificada se mantiene.
+  - `DispenseEdgeCasesTest` (22:00 de Bogotá) viajaba a una fecha fija pasada (2026-10-08); con el trigger, PostgreSQL (cuyo `now()` no mueve `travelTo`) veía vencido el lote que para la app "vence hoy". Ahora viaja a un día futuro relativo a hoy.
+- Puntos que Daniel debe revisar/entender:
+  - Las pruebas que viajan en el tiempo en PHP hacia el PASADO y dispensan o trasladan lotes "que vencen hoy" chocarán con los triggers (S-65). Viajar al futuro es seguro.
+  - Cómo funciona `expected_lots_if_stocked` y por qué no es un chequeo tautológico (lee `stocks` directo, no la herramienta).
+- Riesgos o cosas que podrían estar mal:
+  - Las fechas de la semilla son relativas al día en que se sembró: semanas después, `L-ACE-2402` vence y C01 cambia de resultado esperado (falla la parte "si tiene existencias, debe estar en lotes por vencer"). `make fresh` lo arregla; el eval de CI siempre siembra de cero.
+  - En la frontera de medianoche, el reloj de PHP y el de PostgreSQL pueden diferir unos segundos: el trigger podría rechazar un lote que la app consideró vigente (la transacción se deshace y responde 422 `LOTE_VENCIDO`).
+  - README.md y docs/SUSTENTACION.md todavía citan la ruta vieja del eval y el "17/18" (los actualiza otro agente).
+
+### 2026-10-13 — Revisión final: correcciones de documentación
+- Agente: technical writer (Claude Code)
+- Qué generó la IA:
+  - README: fila RN-01 con los dos triggers (`dispensation_item_lots_check_lot`, `transfer_item_lots_check_lot`) y 422 `LOTE_VENCIDO`; RN-10 con el cast `encrypted` movido a la columna Código; eval con la ruta `backend/database/assistant/eval.json` y el comando sobre el stack de un comando; Node 24 + `make frontend-install` para `make test`/`make lint`; "Qué quedó fuera" con CI en verde (run 38434686392) y el punto nuevo de catálogos/ENTRADA; sección "CI/CD: configurar la aprobación de producción" (movida desde DEPLOY.md).
+  - `docs/supuestos.md`: S-119 (sin API de escritura de catálogos ni de ENTRADA; en la demo la mercancía entra como `AJUSTE` +); S-05 y la justificación de S-69 marcados como superados por la Fase 7.
+  - `docs/modelo-datos.md`: los 17 triggers reales (consultados en `pg_trigger` del stack en ejecución) en la tabla; "Lo que la BD NO garantiza" reescrito; usuarios demo solo con `SEED_DEMO_DATA=true`.
+  - `docs/DEPLOY.md` recortado de 765 a 403 palabras (`wc -w`).
+  - `docs/SUSTENTACION.md`: pregunta 9 y cambio 6.3 con RN-01 en BD; preguntas 23 (superusuario y trigger del kardex) y 24 (entrada de mercancía); nota del eval después de la demo; línea de `ApiErrorRenderer` corregida a `:161`.
+  - `docs/openapi.yaml`: 422 `LOTE_VENCIDO` en crear y autorizar dispensación y en despachar traslado (redocly: válido, mismas 6 advertencias). `frontend/src/api/types.ts`: cabecera a 0.7.0.
+  - `AI_USAGE.draft.md` (conteo de commits 192/198, CI en verde), `.claude/agents/ia-asistente.md` (ruta del eval) y `docs/PROGRESO.md` (bloqueo de facturación resuelto).
+- Qué decisión tomó y por qué:
+  - El conteo de commits se dejó como "casi todos (192 de 198 al 13-10-2026)" con el comando para recontar, porque cambia con cada commit.
+  - En el despacho de traslados se documentó también el 422 `LOTE_VENCIDO`: el trigger de traslados ya existía y el OpenAPI no lo listaba.
+  - No se tocaron las secciones `[DANIEL: completar]` de AI_USAGE ni se agregaron revisiones humanas.
+- Puntos que Daniel debe revisar/entender:
+  - S-119 es una decisión de alcance nueva por escrito: si el evaluador pregunta por compras, la respuesta es `AJUSTE` + con motivo hoy y un servicio sobre `StockService::increase` con `ENTRADA` como mejora.
+  - La pregunta 23: el modelo de amenaza deja fuera al superusuario; lo que se defiende es la API (rol `fartmar_app`).
+  - Pendiente tuyo: crear el environment `production` con revisores y la variable `PRODUCTION_REVIEWERS_CONFIGURED` (pasos en el README).
+- Riesgos o cosas que podrían estar mal:
+  - Las referencias con número de línea de SUSTENTACION.md se revisaron solo donde el commit 30d37ea movió código (`ApiErrorRenderer`); otras podrían haberse corrido en commits anteriores.
+  - El eval sobre el stack de producción no se volvió a correr en esta tarea (el stack en ejecución era el de desarrollo, donde dio 18/18); se cita lo verificado en el commit 767facc.

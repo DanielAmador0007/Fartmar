@@ -189,8 +189,8 @@ jobs:
       - name: Pest (incluye el grupo concurrency con procesos reales)
         run: vendor/bin/pest --ci
 
-      # El eval lee tests/Assistant/eval.json: corre aquí (con el código
-      # fuente) y no en la imagen de producción, que no lleva tests/.
+      # El eval lee database/assistant/eval.json (también va en la imagen de
+      # producción); aquí corre sobre una BD recién sembrada.
       - name: BD recién sembrada para el eval
         env:
           DB_DATABASE: fartmar_eval
@@ -265,12 +265,16 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-      - name: Las imágenes corren sin root y la de la API no lleva tests/
+      - name: Las imágenes corren sin root y la de la API no lleva tests/ (sí el eval)
         run: |
           test "$(docker run --rm --entrypoint id fartmar-api:ci -u)" != "0"
           test "$(docker run --rm --entrypoint id fartmar-web:ci -u)" != "0"
           if docker run --rm --entrypoint test fartmar-api:ci -d /app/tests; then
             echo "::error::La imagen de producción incluye tests/"
+            exit 1
+          fi
+          if ! docker run --rm --entrypoint test fartmar-api:ci -f /app/database/assistant/eval.json; then
+            echo "::error::La imagen de producción no incluye database/assistant/eval.json (assistant:eval)"
             exit 1
           fi
 
