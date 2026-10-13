@@ -15,8 +15,10 @@ ARG PHP_VERSION=8.4
 
 FROM php:${PHP_VERSION}-fpm-alpine AS base
 
+# apk upgrade: parches de Alpine posteriores a la imagen base (Trivy en CI).
 # fcgi = cgi-fcgi para el healthcheck por FastCGI (sin Nginx).
-RUN apk add --no-cache icu-libs libpq fcgi \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache icu-libs libpq fcgi \
     && apk add --no-cache --virtual .build-deps $PHPIZE_DEPS icu-dev postgresql-dev linux-headers \
     && docker-php-ext-install -j"$(nproc)" pdo_pgsql intl pcntl \
     && apk del .build-deps

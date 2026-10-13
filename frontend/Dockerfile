@@ -19,6 +19,11 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM nginxinc/nginx-unprivileged:1.29-alpine AS production
 
+# Parches de seguridad de Alpine publicados después de la imagen base (Trivy en
+# CI falla con HIGH/CRITICAL que ya tienen arreglo). Único paso como root.
+USER root
+RUN apk upgrade --no-cache
+
 COPY --from=infra nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=infra nginx/fartmar/ /etc/nginx/fartmar/
 COPY --from=build /app/dist /usr/share/nginx/html
