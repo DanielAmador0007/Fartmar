@@ -711,3 +711,16 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
 - Riesgos o cosas que podrían estar mal:
   - Las referencias con número de línea de SUSTENTACION.md se revisaron solo donde el commit 30d37ea movió código (`ApiErrorRenderer`); otras podrían haberse corrido en commits anteriores.
   - El eval sobre el stack de producción no se volvió a correr en esta tarea (el stack en ejecución era el de desarrollo, donde dio 18/18); se cita lo verificado en el commit 767facc.
+
+### 2026-10-13 — AI_USAGE.md final y correo de entrega
+- Agente: Claude Code (sesión principal, sin subagentes)
+- Qué generó la IA:
+  - Redacción de `AI_USAGE.md` en primera persona a partir de las respuestas de Daniel (cómo trabajó, ejemplo aceptado, ejemplo corregido, herramientas); Daniel completó los bloques `[AJUSTA]` con lo que verificó a mano.
+  - Borrador del correo de entrega al evaluador.
+- Qué decisión tomó y por qué:
+  - Se borró `AI_USAGE.draft.md` porque `AI_USAGE.md` lo reemplaza; se mantienen `CLAUDE.md`, `PROMPT_ORQUESTADOR.md`, `LEEME_KIT.md`, `.claude/agents/` y `docs/SUSTENTACION.md` y se declaran en el correo como parte del método de trabajo con IA.
+  - El ejemplo "corregido" se cuenta tal cual ocurrió: lo detectó el agente de pruebas dentro del flujo con revisor que diseñó Daniel, sin afirmar una corrección manual.
+- Puntos que Daniel debe revisar/entender:
+  - El correo debe salir desde su cuenta; revisar nombres, enlace del repo y disponibilidad para la sustentación.
+- Riesgos o cosas que podrían estar mal:
+  - El job de producción del CI sigue *skipped* hasta crear el environment `production` con revisores.
