@@ -57,8 +57,11 @@ fi
 
 load_keys
 
-# Cachés de configuración, rutas, eventos y vistas con el entorno de ESTE
-# contenedor. Desde aquí `env()` fuera de config/ no se usa (no hay).
-php artisan optimize --no-interaction > /dev/null
+# Cachés de configuración, rutas y eventos con el entorno de ESTE contenedor
+# (no `optimize`: también cachea vistas y la API no tiene resources/views).
+# Desde aquí la app no lee .env; `env()` solo se usa dentro de config/.
+php artisan config:cache --no-interaction > /dev/null
+php artisan route:cache --no-interaction > /dev/null
+php artisan event:cache --no-interaction > /dev/null
 
 exec "$@"

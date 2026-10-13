@@ -71,9 +71,23 @@ CMD ["php-fpm"]
 # ---------------------------------------------------------------------------
 FROM base AS production
 
+# Valores de ejecución de producción (la imagen no lleva backend/.env). Van en
+# la imagen y no en docker-compose.yml: como variables del contenedor de
+# desarrollo taparían los valores de prueba de phpunit.xml (CACHE_STORE=array,
+# BCRYPT_ROUNDS=4...), que no son forzados.
 ENV APP_ENV=production \
     APP_DEBUG=false \
-    LOG_CHANNEL=json
+    APP_NAME=FARTMAR \
+    APP_LOCALE=es \
+    APP_FALLBACK_LOCALE=en \
+    LOG_CHANNEL=json \
+    CACHE_STORE=database \
+    SESSION_DRIVER=array \
+    QUEUE_CONNECTION=sync \
+    MAIL_MAILER=log \
+    BROADCAST_CONNECTION=log \
+    BCRYPT_ROUNDS=12 \
+    BUSINESS_TIMEZONE=America/Bogota
 
 COPY --from=infra php/conf.d/zz-opcache-prod.ini /usr/local/etc/php/conf.d/zz-opcache-prod.ini
 COPY --from=infra php/entrypoint.sh /usr/local/bin/entrypoint

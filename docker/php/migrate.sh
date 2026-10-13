@@ -5,6 +5,9 @@
 #   2. aplica migraciones (usuario dueño de las tablas)
 #   3. crea/actualiza el rol de la app (DB_APP_USERNAME), sin TRUNCATE ni DDL
 #   4. siembra datos demo SINTÉTICOS si SEED_DEMO_DATA=true (seeders idempotentes)
+#
+# El código PHP entre comillas simples lee el entorno con getenv().
+# shellcheck disable=SC2016
 set -eu
 
 cd /app
