@@ -689,3 +689,25 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Las fechas de la semilla son relativas al día en que se sembró: semanas después, `L-ACE-2402` vence y C01 cambia de resultado esperado (falla la parte "si tiene existencias, debe estar en lotes por vencer"). `make fresh` lo arregla; el eval de CI siempre siembra de cero.
   - En la frontera de medianoche, el reloj de PHP y el de PostgreSQL pueden diferir unos segundos: el trigger podría rechazar un lote que la app consideró vigente (la transacción se deshace y responde 422 `LOTE_VENCIDO`).
   - README.md y docs/SUSTENTACION.md todavía citan la ruta vieja del eval y el "17/18" (los actualiza otro agente).
+
+### 2026-10-13 — Revisión final: correcciones de documentación
+- Agente: technical writer (Claude Code)
+- Qué generó la IA:
+  - README: fila RN-01 con los dos triggers (`dispensation_item_lots_check_lot`, `transfer_item_lots_check_lot`) y 422 `LOTE_VENCIDO`; RN-10 con el cast `encrypted` movido a la columna Código; eval con la ruta `backend/database/assistant/eval.json` y el comando sobre el stack de un comando; Node 24 + `make frontend-install` para `make test`/`make lint`; "Qué quedó fuera" con CI en verde (run 38434686392) y el punto nuevo de catálogos/ENTRADA; sección "CI/CD: configurar la aprobación de producción" (movida desde DEPLOY.md).
+  - `docs/supuestos.md`: S-119 (sin API de escritura de catálogos ni de ENTRADA; en la demo la mercancía entra como `AJUSTE` +); S-05 y la justificación de S-69 marcados como superados por la Fase 7.
+  - `docs/modelo-datos.md`: los 17 triggers reales (consultados en `pg_trigger` del stack en ejecución) en la tabla; "Lo que la BD NO garantiza" reescrito; usuarios demo solo con `SEED_DEMO_DATA=true`.
+  - `docs/DEPLOY.md` recortado de 765 a 403 palabras (`wc -w`).
+  - `docs/SUSTENTACION.md`: pregunta 9 y cambio 6.3 con RN-01 en BD; preguntas 23 (superusuario y trigger del kardex) y 24 (entrada de mercancía); nota del eval después de la demo; línea de `ApiErrorRenderer` corregida a `:161`.
+  - `docs/openapi.yaml`: 422 `LOTE_VENCIDO` en crear y autorizar dispensación y en despachar traslado (redocly: válido, mismas 6 advertencias). `frontend/src/api/types.ts`: cabecera a 0.7.0.
+  - `AI_USAGE.draft.md` (conteo de commits 192/198, CI en verde), `.claude/agents/ia-asistente.md` (ruta del eval) y `docs/PROGRESO.md` (bloqueo de facturación resuelto).
+- Qué decisión tomó y por qué:
+  - El conteo de commits se dejó como "casi todos (192 de 198 al 13-10-2026)" con el comando para recontar, porque cambia con cada commit.
+  - En el despacho de traslados se documentó también el 422 `LOTE_VENCIDO`: el trigger de traslados ya existía y el OpenAPI no lo listaba.
+  - No se tocaron las secciones `[DANIEL: completar]` de AI_USAGE ni se agregaron revisiones humanas.
+- Puntos que Daniel debe revisar/entender:
+  - S-119 es una decisión de alcance nueva por escrito: si el evaluador pregunta por compras, la respuesta es `AJUSTE` + con motivo hoy y un servicio sobre `StockService::increase` con `ENTRADA` como mejora.
+  - La pregunta 23: el modelo de amenaza deja fuera al superusuario; lo que se defiende es la API (rol `fartmar_app`).
+  - Pendiente tuyo: crear el environment `production` con revisores y la variable `PRODUCTION_REVIEWERS_CONFIGURED` (pasos en el README).
+- Riesgos o cosas que podrían estar mal:
+  - Las referencias con número de línea de SUSTENTACION.md se revisaron solo donde el commit 30d37ea movió código (`ApiErrorRenderer`); otras podrían haberse corrido en commits anteriores.
+  - El eval sobre el stack de producción no se volvió a correr en esta tarea (el stack en ejecución era el de desarrollo, donde dio 18/18); se cita lo verificado en el commit 767facc.
