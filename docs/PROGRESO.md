@@ -1,7 +1,7 @@
 # Estado del proyecto y traspaso entre sesiones
 
 > Documento vivo. Léelo al iniciar una sesión nueva de Claude Code (junto con `CLAUDE.md`).
-> Última actualización: 2026-10-11, al cerrar la Fase 5.
+> Última actualización: 2026-10-12, al cerrar la Fase 6.
 >
 > Flujo de ramas: cada fase en su rama `feat/fase-N-<tema>` → push → PR a `main` → merge. Empezar la
 > siguiente fase desde `main` actualizado (`git checkout main; git pull`).
@@ -25,10 +25,10 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 1 Modelo de datos | ✅ Hecha | 10 migraciones, 19 modelos, enums, seeders, 80 tests (214 aserciones) |
 | 2 Dispensación (FEFO, concurrencia, idempotencia) | ✅ Hecha (PR #1, mergeado) | FefoAllocator, StockService, KardexService, DispenseService, API `/api/v1`; 253 tests (871 aserciones) con 9 de concurrencia real; revisor-senior sin Críticos/Altos, Medios corregidos |
 | 3 Traslados, ajustes, alertas | ✅ Hecha (PR #2, mergeado) | TransferStateMachine, TransferService, AdjustmentService, AlertService, KardexQuery, stock en tránsito; 540 tests (2350 aserciones) con 20 de concurrencia real; revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-48…S-67 |
-| 4 Seguridad y privacidad | ✅ Hecha (PR `feat/fase-4-seguridad`) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
-| 5 Frontend | ✅ Hecha (PR `feat/fase-5-frontend`, apilada sobre la Fase 4) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
-| 6 Asistente IA | ⏭️ **Siguiente** | ia-asistente; ver "Lo que las fases siguientes deben saber de la Fase 5" |
-| 7 DevOps completo | Pendiente | |
+| 4 Seguridad y privacidad | ✅ Hecha (mergeada con el PR #3) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
+| 5 Frontend | ✅ Hecha (PR #3, mergeado) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
+| 6 Asistente IA | ✅ Hecha (PR `feat/fase-6-asistente-ia`) | `LlmProvider` mock/ollama/anthropic por `LLM_PROVIDER`, 7 herramientas de solo lectura con Policies, filtros de entrada/salida, notas de traslados nunca enviadas al modelo, `POST /assistant/query`, `assistant:eval` 18/18 con mock, pantalla del asistente; 917 Pest (3875 aserciones), 121 Vitest; revisor-senior sin Críticos, Alto y Medios corregidos; supuestos S-89…S-98; OpenAPI 0.6.1 |
+| 7 DevOps completo | ⏭️ **Siguiente** | devops-docker-ci; ver "Lo que las fases siguientes deben saber de la Fase 6" |
 | 8 Documentación y cierre | Pendiente | |
 
 ## Entorno (importante para cualquier agente)
@@ -49,11 +49,28 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 - **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
   issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
 
+## Lo que las fases siguientes deben saber de la Fase 6
+
+- Código en `backend/app/Domain/Assistant` (servicio, guardas, proveedores, herramientas); contrato y trade-offs en
+  `docs/asistente-ia.md` (texto base para la sección del README en la Fase 8).
+- **DevOps (Fase 7):**
+  - Variables nuevas en `.env.example` y compose: `LLM_PROVIDER` (default `mock`), `OLLAMA_URL`, `OLLAMA_MODEL`,
+    `LLM_API_KEY` (nunca en el repo), `ANTHROPIC_MODEL`, `LLM_TIMEOUT`, `LLM_MAX_TOKENS`. El compose tiene `extra_hosts` para
+    `host.docker.internal` (Ollama en el host).
+  - El eval lee `backend/tests/Assistant/eval.json`: si la imagen de producción excluye `tests/`, mover el archivo o
+    correr el eval desde la imagen de CI. Agregar `php artisan assistant:eval` al pipeline (sobre BD recién sembrada;
+    el comando avisa si la semilla fue modificada).
+- Proveedores reales sin probar en vivo: Ollama no está instalado en el host y Anthropic solo se probó con
+  `Http::fake`. Un nombre propio escrito en la pregunta no se detecta (S-92): con proveedor externo saldría de la IPS.
+- Bajos abiertos: nombres de bodega/producto (editables por admin) no van marcados como no confiables (L1); el mock no
+  entiende sinónimos ("paracetamol"); el filtro de entrada rechaza lotes numéricos de ≥ 7 dígitos.
+- En la BD de desarrollo el eval da 17/18 porque la demo de la Fase 5 dispensó L-ACE-2402; `make fresh` lo restablece.
+
 ## Lo que las fases siguientes deben saber de la Fase 5
 
 - Frontend en `frontend/src`: `api/` (cliente único, `errors.ts` mapea códigos a español y muestra el correlation id),
   `auth/` (sesión, `permissions.ts` solo para menú/rutas), `features/<módulo>/`. `api/types.ts` se mantiene a mano
-  contra `docs/openapi.yaml` (0.5.1).
+  contra `docs/openapi.yaml` (0.6.1 desde la Fase 6).
 - Token en `sessionStorage` (S-82); datos de paciente solo en memoria. Idempotency-Key por intento (S-83), con
   respaldo si no hay `crypto.randomUUID`.
 - **Asistente IA (Fase 6):** falta la pantalla del asistente en el frontend; agregarla en `features/assistant/` y en
