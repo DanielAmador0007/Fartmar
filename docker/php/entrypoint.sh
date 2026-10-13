@@ -16,7 +16,9 @@ KEYS_FILE="${APP_KEYS_FILE:-/var/lib/fartmar/app-keys.env}"
 KEY_NAMES="APP_KEY PATIENT_HASH_KEY"
 
 key_from_file() {
-    [ -f "$KEYS_FILE" ] && sed -n "s/^$1=//p" "$KEYS_FILE" | head -n 1 || true
+    if [ -f "$KEYS_FILE" ]; then
+        sed -n "s/^$1=//p" "$KEYS_FILE" | head -n 1
+    fi
 }
 
 generate_missing_keys() {
