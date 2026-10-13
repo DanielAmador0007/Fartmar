@@ -924,7 +924,7 @@ paths:
         - Si la respuesta del modelo trae datos fuera de alcance (documentos, `SYSTEM:`, el system prompt), el servidor la
           reemplaza (`outcome: refused`, `result: null`).
         - `answer` es **texto plano** con saltos de línea; mostrarlo como texto, nunca como HTML. Las observaciones de
-          traslados en `result.rows[].notes` vienen como `{untrusted: true, text}`.
+          traslados en `result.rows[].notes` vienen como `{untrusted: true, text}`; ese texto nunca se envía al modelo (solo sabe si existe).
 
         Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor` (Gate `useAssistant` = puede leer inventario, S-89).
         Límite propio: `ASSISTANT_RATE_LIMIT_PER_MINUTE` (10) preguntas por minuto por usuario, además del general.
@@ -1729,7 +1729,7 @@ components:
         provider: { type: string, enum: [mock, ollama, anthropic] }
         tools_used:
           type: array
-          description: Herramientas que pidió el modelo, en orden, con los argumentos tal como los mandó y si se ejecutaron
+          description: Herramientas que pidió el modelo, en orden, y si se ejecutaron. `arguments` son los argumentos validados y normalizados con que se ejecutó (textos recortados a 100 caracteres); `{}` si la herramienta fue rechazada (OpenAPI 0.6.1)
           items:
             type: object
             properties:

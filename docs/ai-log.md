@@ -567,3 +567,27 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Si el backend cambia la forma de las filas de una herramienta, la tabla puede romperse en tiempo de ejecución (los tipos son a mano, sin validación en runtime).
   - No se probó contra la API real en Docker desde esta tarea (solo con el simulador `mockApi`); conviene una prueba manual con `mock` y la semilla limpia.
   - Con un proveedor real la respuesta puede tardar varios segundos; solo hay "Consultando…", sin botón de cancelar.
+
+### 2026-10-12 — Fase 6: corrección de los hallazgos del revisor-senior (asistente IA)
+- Agente: ia-asistente
+- Qué generó la IA:
+  - **A1** `ToolResult` separa los datos de la UI (`data`) de los del modelo (`modelData`); `AssistantTool::forModel()` y `GetTransfersTool` cambian `notes` por `has_notes`. La UI conserva `{untrusted, text}`.
+  - **M1/M3** `QuestionGuard`: números de 7+ dígitos (con espacios, puntos o guiones; sin fechas ni códigos con prefijo) como dato personal; escritura solo en imperativo; teléfono/dirección "de la farmacia/bodega" y "dispensación" a secas ya no se rechazan. `OutputGuard`: 9+ dígitos o 6+ tras CC/NIT/teléfono/celular, en vez de 7+ dígitos sueltos. `Text::joinDigitGroups()`.
+  - **M2** `tools_used` con argumentos validados (textos a 100) o `{}` si se rechazó.
+  - **M5** `InventoryQuery::totals()` (consulta agregada) para `total_quantity`/`available_quantity`.
+  - **M4** eval: `expected_tool_ok`, `expected_result_count`, `expected_result_contains`, `expected_answer_contains_any`; aviso de semilla modificada. Ollama no estaba disponible en el host: documentado cómo correrlo.
+  - **L2** `is_error` en `tool_result` y `stop_reason: max_tokens` → mensaje seguro. **L4** `HttpClientException`/`GuzzleException` → 503. **L5** comentario de `JSON_HEX_TAG` reescrito. **L6** redacción de `question`, `answer`, `messages`, `prompt`. **L7** key de filas con `product.id`. **L9** 503 sin `details.provider` (OpenAPI 0.6.1).
+  - Supuestos S-91, S-92, S-93, S-95 y S-96 actualizados; `docs/asistente-ia.md`.
+- Qué decisión tomó y por qué:
+  - Para A1 se eligió no enviar el texto en absoluto (en vez de enmascararlo): con `has_notes` el modelo puede decir "hay observaciones, mírelas en la tabla" y no hay nada que filtrar ni que pueda inyectar.
+  - En la entrada se mantuvo el umbral de 7 dígitos que pidió la revisión (un lote numérico de 7+ dígitos en la pregunta se rechaza; costo aceptado y documentado). En la salida se subió a 9 para no bloquear lotes o fechas de 8 dígitos, conservando el bloqueo de la cédula sembrada (10 dígitos) y de cualquier número tras CC/teléfono.
+  - El comentario de L5 y una línea de S-93 se habían corrompido porque las secuencias de escape unicode escritas por la IA se convirtieron en los caracteres reales al guardar; ahora se describen con palabras.
+  - L3 no se aplicó por indicación del coordinador (`claude-sonnet-5-5` es válido).
+- Puntos que Daniel debe revisar/entender:
+  - Las dos vistas de `ToolResult` y por qué la tabla de la UI sí muestra la observación pero el modelo no.
+  - Que los regex son higiene: la defensa real es que las herramientas solo leen inventario autorizado.
+  - Los campos nuevos de `eval.json` y cómo evaluar un modelo real con `--provider=ollama --threshold=…`.
+- Riesgos o cosas que podrían estar mal:
+  - El eval con Ollama no se ejecutó (no hay Ollama en el host); Anthropic sigue probado solo con `Http::fake`.
+  - Un nombre propio en la pregunta no se detecta y viajaría a un proveedor externo; mitigación: mock u Ollama.
+  - Durante la corrección Docker Desktop se detuvo solo; se volvió a abrir la aplicación (sin tocar contenedores ajenos) y los contenedores de fartmar arrancaron sanos.
