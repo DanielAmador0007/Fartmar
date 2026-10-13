@@ -30,7 +30,8 @@ flowchart LR
 
 ## Ejecutar en un comando
 
-Requisito: Docker con Compose v2. No hace falta PHP, Composer ni Node en el host para la demo.
+Requisito: Docker con Compose v2. No hace falta PHP, Composer ni Node en el host para la demo (`make test` y `make lint`
+sí necesitan Node 24 en el host, ver [Pruebas](#pruebas-linters-y-evaluación-del-asistente)).
 
 ```bash
 cp .env.example .env && docker compose up -d --build --wait      # equivale a: make up
@@ -65,7 +66,7 @@ Contraseña de todos: **`password`** (solo demo; ver `docs/modelo-datos.md`).
 | `regente2@fartmar.test` | `regente_farmacia` | Segundo regente para RN-05 (autoriza lo que creó el otro) y RN-08 |
 | `medico@fartmar.test` | `medico` | Crear prescripciones, consultar pacientes |
 | `auditor@fartmar.test` | `auditor` | Solo lectura; pacientes enmascarados |
-| `admin@fartmar.test` | `admin` | Usuarios y catálogos (no ve pacientes, S-68) |
+| `admin@fartmar.test` | `admin` | Usuarios; los catálogos se cargan por semilla, sin API de escritura (S-119). No ve pacientes (S-68) |
 
 Pacientes sintéticos: CC `9900000001` (Ana), `9900000002` (Carlos), `9900000003` (Lucía, con morfina de control especial).
 Hay un lote vencido (`L-ACE-2401`), lotes que vencen en < 30 días y un traslado sembrado con una observación maliciosa
@@ -91,13 +92,20 @@ sus propias llaves de cifrado (S-99).
 
 | Comando (`make …` o `.\make.ps1 …`) | Qué corre |
 |---|---|
-| `test` | Pest (backend, contra PostgreSQL `fartmar_test`, incluye concurrencia) + Vitest (frontend) |
+| `test` | Pest (backend, contra PostgreSQL `fartmar_test`, incluye concurrencia) + Vitest (frontend, **en el host**) |
 | `test-concurrency` | Solo las 20 pruebas de concurrencia real (procesos PHP en paralelo; ~2 min) |
-| `lint` | Pint `--test`, Larastan (nivel 6), ESLint y `tsc` |
+| `lint` | Pint `--test`, Larastan (nivel 6) + ESLint y `tsc` (**en el host**) |
 | `eval` | Evaluación del asistente IA: `php artisan assistant:eval --provider=mock` (18 casos, umbral 90 %) |
 
 `test`, `lint`, `eval` y `fresh` levantan el entorno de desarrollo solos si la API en ejecución no es la de desarrollo.
-`make eval` asume la semilla limpia: si ya se hicieron dispensaciones en la demo, correr antes `make fresh`.
+La parte de frontend de `test` y `lint` corre con `npm` en el host: requiere **Node 24** y haber ejecutado una vez
+`make frontend-install` (`npm ci`). La demo no lo necesita.
+
+El eval también corre sobre el stack de un comando, sin entorno de desarrollo ni Node en el host:
+
+```bash
+docker compose exec -T api php artisan assistant:eval --provider=mock   # 18/18, también después de la demo
+```
 
 Las pruebas nunca usan SQLite: CHECK, triggers y `FOR UPDATE` son justo lo que se prueba (S-02). Las de concurrencia no
 usan `RefreshDatabase` (una transacción envolvente ocultaría la carrera): lanzan procesos PHP reales con su propia
@@ -158,7 +166,7 @@ Rutas relativas a `backend/`. "BD" = defensa en PostgreSQL además del código.
 
 | Regla | Código | BD | Pruebas principales |
 |---|---|---|---|
-| **RN-01** Lote vencido nunca sale | `StockService::decrease` (salidas), `StockService::fefoQuery` (`expires_at >= hoy`), `BusinessDate` | UNIQUE `(warehouse_id, lot_id)`; trigger `transfer_item_lots_check_lot` (no despachar vencido) | `Unit/FefoAllocatorTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (medianoche Bogotá), `Feature/Database/TransferLotIntegrityGuardsTest` |
+| **RN-01** Lote vencido nunca sale | `StockService::decrease` (salidas), `StockService::fefoQuery` (`expires_at >= hoy`), `BusinessDate` | triggers `dispensation_item_lots_check_lot` (no dispensar vencido) y `transfer_item_lots_check_lot` (no despachar vencido), ambos con la función `business_today()` (S-65); el error se mapea a 422 `LOTE_VENCIDO` (`Http/ApiErrorRenderer.php`) | `Unit/FefoAllocatorTest`, `Feature/Inventory/StockServiceTest`, `Feature/Dispensing/DispenseEdgeCasesTest` (medianoche Bogotá), `Feature/Database/DispensingConstraintsTest`, `Feature/Database/TransferLotIntegrityGuardsTest`, `Feature/Api/DatabaseErrorMappingTest` |
 | **RN-02** FEFO multi-lote | `Inventory/FefoAllocator.php` (puro), `StockService::lockFefoCandidates` | índice `(product_id, expires_at, id)`; FK compuestas lote↔producto | `Unit/FefoAllocatorTest`, `Feature/Dispensing/DispenseServiceTest`, `Concurrency/DispenseConcurrencyTest` (FEFO con 10 procesos) |
 | **RN-03** Stock nunca negativo | `DB::transaction(fn, 3)` + `FOR UPDATE OF stocks` ordenado `(expires_at, lot_id)` + `UPDATE … quantity = quantity ± n` | CHECK `stocks_quantity_non_negative` | `Concurrency/DispenseConcurrencyTest` (última unidad × 8 procesos; prueba de control sin `FOR UPDATE`), `Concurrency/TransferConcurrencyTest`, `Feature/Database/InventoryConstraintsTest` |
 | **RN-04** Prescripción vigente, no exceder | `DispenseService::lockAndValidateLines` (prescrito − entregado − reservado) | CHECK `prescription_items_dispensed_le_prescribed`; FK `(prescription_id, patient_id)`; trigger `dispensation_items_check_integrity` | `Feature/Dispensing/DispenseServiceTest`, `DispenseEdgeCasesTest`, `Feature/Database/DispensingConstraintsTest`, `Concurrency/DispenseConcurrencyTest` |
@@ -167,7 +175,7 @@ Rutas relativas a `backend/`. "BD" = defensa en PostgreSQL además del código.
 | **RN-07** Estados del traslado | `Transfers/TransferStateMachine.php`, `TransferService` (bloquea la fila antes de leer el estado) | `transfers_status_check`; trigger `transfers_check_transition` (misma tabla de pares); `transfer_items_only_in_draft`; `transfer_discrepancies_freeze_resolved` | `Unit/TransferStateMachineTest` (49 pares), `Feature/Database/TransferTransitionGuardsTest` (BD = máquina), `Feature/Transfers/TransferServiceTest`, `TransferConservationTest`, `Concurrency/TransferConcurrencyTest` |
 | **RN-08** Solicitante ≠ aprobador | `TransferPolicy::approve` (`SEGREGACION_FUNCIONES`), `TransferService::approve` | CHECK `transfers_approver_differs`; trigger `transfers_check_roles` | `TransferServiceTest`, `Feature/Api/TransferApiTest`, `Feature/Database/TransferConstraintsTest`, `Feature/Security/AuthorizationMatrixTest` |
 | **RN-09** Dispensación idempotente | `StoreDispensationRequest` (header obligatorio), `Dispensing/IdempotencyGuard.php`, `DispenseService::create` (UNIQUE en la misma transacción) | UNIQUE `dispensations_idempotency_key_unique` + `request_hash` | `DispenseServiceTest` (carrera simulada), `Feature/Api/DispensationApiTest`, `Concurrency/DispenseConcurrencyTest` (misma clave × 8 procesos) |
-| **RN-10** Privacidad del paciente | `PatientPolicy::viewUnmasked`, `PatientResource` + `PatientMasker`, `PatientAccessLogger`, `Logging/RedactSensitiveData.php`, `AssignCorrelationId` | documento y teléfono cifrados (cast `encrypted`) + `document_hash` HMAC UNIQUE; `patient_access_logs`/`audit_logs` append-only | `Feature/Api/PatientApiTest`, `Unit/PatientMaskerTest`, `Feature/Security/LoggingPrivacyTest`, `Feature/Database/PrivacyConstraintsTest` |
+| **RN-10** Privacidad del paciente | `PatientPolicy::viewUnmasked`, `PatientResource` + `PatientMasker`, `PatientAccessLogger`, `Logging/RedactSensitiveData.php`, `AssignCorrelationId`; documento y teléfono cifrados por la aplicación (cast `encrypted` en `Models/Patient.php`) | `document_hash` HMAC UNIQUE; `patient_access_logs`/`audit_logs` append-only (trigger + rol `fartmar_app` solo `SELECT/INSERT`) | `Feature/Api/PatientApiTest`, `Unit/PatientMaskerTest`, `Feature/Security/LoggingPrivacyTest`, `Feature/Database/PrivacyConstraintsTest` |
 | **RN-11** Alertas | `Inventory/AlertService.php` (`ALERT_EXPIRY_DAYS`, 90 por defecto) | CHECK `stock_minimums_min_quantity_non_negative`; UNIQUE `(warehouse_id, product_id)` | `Feature/Inventory/AlertsTest` (bordes 30/31, 90/91, vence hoy, Bogotá vs UTC) |
 
 Frontend: `features/dispensing/idempotency.ts` (una `Idempotency-Key` por intento), `lib/useSubmitGuard.ts` (doble clic) y
@@ -208,7 +216,7 @@ que explicar; los triggers no frenan `TRUNCATE`, por eso la API corre con el rol
 `UPDATE/DELETE` en esas tablas (S-101).
 
 **5. Reglas repetidas en la BD (CHECK + triggers), no solo en el código.**
-Segregación de funciones, transiciones de traslado, cantidades, RN-01 en despacho y saldo del kardex se validan en el
+Segregación de funciones, transiciones de traslado, cantidades, RN-01 (dispensación y despacho) y saldo del kardex se validan en el
 servicio (con error de negocio claro) **y** en PostgreSQL. *Descartado:* confiar solo en `app/Domain`. *Costo:* la tabla de
 transiciones existe en PHP y en SQL; una prueba compara los 49 pares para que no se desincronicen.
 
@@ -229,7 +237,7 @@ servicios en el compose; a cambio, cada uno con su healthcheck, sin root y escal
 
 ## Supuestos principales
 
-Todos (S-01…S-118) en [`docs/supuestos.md`](docs/supuestos.md). Los que más cambian el comportamiento:
+Todos (S-01…S-119) en [`docs/supuestos.md`](docs/supuestos.md). Los que más cambian el comportamiento:
 
 - **"Hoy"** se calcula en `America/Bogota`; fechas guardadas en UTC (S-13). Un lote que vence **hoy** todavía se dispensa
   (vencido = `expires_at < hoy`, S-14).
@@ -266,8 +274,11 @@ central?". Código en `backend/app/Domain/Assistant`; diseño completo en [`docs
   y no inventa; pacientes → `refused`; proveedor caído → 503 `ASISTENTE_NO_DISPONIBLE`.
 - **Límites:** 4 llamadas al modelo por pregunta, 50 filas por herramienta, 10 preguntas/min por usuario (S-94). Logs sin
   la pregunta ni la respuesta (S-95).
-- **Evaluación:** `make eval` → `backend/tests/Assistant/eval.json` (18 casos: consultas, paciente, inyección directa y en
-  observaciones, clima, SQL, rangos inválidos…). Con mock y semilla limpia: 18/18. Modelo real:
+- **Evaluación:** `backend/database/assistant/eval.json` (18 casos: consultas, paciente, inyección directa y en
+  observaciones, clima, SQL, rangos inválidos…), fuera de `tests/` para que viaje en la imagen de producción (S-105).
+  Con mock: `docker compose exec -T api php artisan assistant:eval --provider=mock` sobre el stack de un comando, o
+  `make eval` en desarrollo → 18/18. Los casos no fijan las cantidades de la semilla (`expected_lots_if_stocked`,
+  `expected_result_not_contains`), así que dan 18/18 también después de la demo. Modelo real:
   `docker compose exec -T api php artisan assistant:eval --provider=ollama --threshold=70`.
 - **Local vs. externo:** Ollama mantiene los datos en la máquina pero elige peor las herramientas con modelos de 7–8B;
   Anthropic es mejor pero los datos de inventario salen a un tercero (nunca datos de pacientes). Riesgo residual: un nombre
@@ -327,13 +338,19 @@ Priorizado por impacto. Se prefirió cerrar bien el núcleo evaluado (FEFO, conc
 7. **Asistente**: el mock no entiende sinónimos ("paracetamol"); nombres de bodega/producto editables por admin no van
    marcados como no confiables; un lote numérico de 7+ dígitos en la pregunta se rechaza.
 8. **Datos y API**: sin edición/anulación de prescripciones por API (lista por paciente limitada a 50); un `INSERT`
-   directo de un traslado en estado avanzado no lo bloquea la BD (S-64); la zona horaria está repetida en un trigger (S-65).
-9. **CI/CD real**: durante el desarrollo GitHub Actions no pudo ejecutarse por un bloqueo de facturación de la cuenta; el
-   workflow se validó con actionlint/shellcheck y reproduciendo sus pasos en local. Quedaron sin verificar en GitHub: la
-   compuerta de producción con `vars`, Trivy en el runner, el push a GHCR y `deploy.sh` con `DRY_RUN=0`. Configuración
-   pendiente en el repo: environment `production` con revisores (pasos en DEPLOY.md). Ver el estado actual en la pestaña
-   *Actions*.
-10. **Operación**: WAL/PITR (RPO ≤ 5 min) solo documentado; despliegues simulados (no hay infraestructura real).
+   directo de un traslado en estado avanzado no lo bloquea la BD (S-64); la función SQL `business_today()` repite la
+   zona de `BUSINESS_TIMEZONE` (S-65).
+9. **Sin API de escritura de catálogos ni de ENTRADA de mercancía** (S-119): productos, lotes, bodegas y stock mínimo se
+   cargan por semilla (`InventorySeeder` escribe la existencia inicial con su movimiento `ENTRADA`); no hay endpoints
+   para crearlos o editarlos ni para registrar una compra. En la demo, la mercancía que llega se registra como `AJUSTE`
+   positivo del regente con motivo. Se priorizó el núcleo evaluado; agregarlo sería un servicio que llame a
+   `StockService::increase` con tipo `ENTRADA`.
+10. **CI/CD**: el workflow corre en verde en GitHub Actions (lint, pruebas + eval, imágenes + Trivy, staging simulado y
+    publicación en GHCR; [run 38434686392](https://github.com/DanielAmador0007/Fartmar/actions/runs/38434686392)). El
+    job de producción queda *skipped*: requiere crear el environment `production` en GitHub
+    ([pasos](#cicd-configurar-la-aprobación-de-producción)). `deploy.sh` con `DRY_RUN=0` no se ejecutó (no hay
+    servidor real).
+11. **Operación**: WAL/PITR (RPO ≤ 5 min) solo documentado; despliegues simulados (no hay infraestructura real).
 
 ## Documentación
 
@@ -342,7 +359,7 @@ Priorizado por impacto. Se prefirió cerrar bien el núcleo evaluado (FEFO, conc
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | Despliegue, rollback, respaldo y restauración |
 | [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 de los 35 endpoints de `/api/v1` + sondas (validado con `redocly lint`) |
 | [`docs/modelo-datos.md`](docs/modelo-datos.md) | Esquema, ER, defensas en BD, usuarios demo |
-| [`docs/supuestos.md`](docs/supuestos.md) | Supuestos S-01…S-118 |
+| [`docs/supuestos.md`](docs/supuestos.md) | Supuestos S-01…S-119 |
 | [`docs/asistente-ia.md`](docs/asistente-ia.md) | Diseño del asistente, proveedores, evaluación |
 | [`AI_USAGE.md`](AI_USAGE.md) | Uso de IA en el desarrollo (declaración del candidato) |
 | [`docs/SUSTENTACION.md`](docs/SUSTENTACION.md) | Guía de la sustentación: guion, demo, preguntas, cambios en vivo |
@@ -350,3 +367,17 @@ Priorizado por impacto. Se prefirió cerrar bien el núcleo evaluado (FEFO, conc
 | [`docs/PROGRESO.md`](docs/PROGRESO.md) | Estado por fase y pendientes |
 
 Para validar el OpenAPI: `docker run --rm -v "$PWD/docs:/spec" redocly/cli lint /spec/openapi.yaml`.
+
+### CI/CD: configurar la aprobación de producción
+
+El repo es público: sin un environment con revisores, `environment: production` no pide aprobación, por eso el job de
+producción no corre en un push a `main` hasta configurarlo (S-113):
+
+1. *Settings → Environments → New environment* `production` → *Required reviewers* (Daniel) y, opcional, *Deployment
+   branches: main*. En ese environment, los secretos `SMOKE_EMAIL`/`SMOKE_PASSWORD` (usuario de solo lectura para el
+   smoke de producción).
+2. *Settings → Secrets and variables → Actions → Variables* → `PRODUCTION_REVIEWERS_CONFIGURED = true`.
+
+Sin esa variable, producción solo corre a mano: *Actions → CI → Run workflow* en `main` con
+`confirm_production=DESPLEGAR`. El despliegue es simulado (`scripts/deploy.sh`, `DRY_RUN=1`; ver
+[`docs/DEPLOY.md`](docs/DEPLOY.md)).
