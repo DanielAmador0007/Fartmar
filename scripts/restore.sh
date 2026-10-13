@@ -21,8 +21,8 @@ set -euo pipefail
 export MSYS_NO_PATHCONV=1
 
 cd "$(dirname "$0")/.."
-COMPOSE="${COMPOSE:-docker compose}"
 REMOTE_FILE="/tmp/fartmar-restore.dump"
+DEV_COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 
 file="${1:-}"
 shift || true
@@ -49,10 +49,41 @@ if [ -f "${file}.sha256" ]; then
     echo "[restore] checksum OK"
 fi
 
+# COMPOSE: el mismo conjunto de archivos con el que se levantó el stack. Si no
+# viene, se detecta por la imagen de la API en ejecución (desarrollo o
+# producción). --into-live exige saberlo: el `up` final recrea los servicios
+# con esa configuración.
+if [ -z "${COMPOSE:-}" ]; then
+    api_id=$(docker compose ps -q api 2>/dev/null || true)
+    api_image=$( [ -n "$api_id" ] && docker inspect -f '{{.Config.Image}}' "$api_id" 2>/dev/null || true)
+    case "$api_image" in
+        fartmar-api-dev:*) COMPOSE="$DEV_COMPOSE" ;;
+        "")
+            if [ "$mode" = "live" ]; then
+                echo "[restore] No hay API en ejecución para detectar el entorno. Indique COMPOSE explícito, p. ej.:" >&2
+                echo "  COMPOSE=\"docker compose\" scripts/restore.sh $file --into-live" >&2
+                exit 2
+            fi
+            COMPOSE="docker compose" ;;
+        *) COMPOSE="docker compose" ;;
+    esac
+fi
+echo "[restore] Entorno: ${COMPOSE}"
+
 db_sh() { $COMPOSE exec -T "$@"; }
 
+# Limpieza siempre (también si la verificación falla o se interrumpe): el
+# archivo copiado y, en la prueba, la BD temporal salvo --keep.
+temp_db=""
+cleanup() {
+    if [ -n "$temp_db" ] && [ "$keep" != "true" ]; then
+        db_sh -e TARGET="$temp_db" db sh -c 'dropdb -U "$POSTGRES_USER" --if-exists "$TARGET"' > /dev/null 2>&1             && echo "[restore] BD temporal ${temp_db} borrada"
+    fi
+    db_sh db rm -f "$REMOTE_FILE" > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
 $COMPOSE cp "$file" "db:${REMOTE_FILE}"
-trap '$COMPOSE exec -T db rm -f "$REMOTE_FILE" > /dev/null 2>&1 || true' EXIT
 
 # Comprobaciones sobre la BD $TARGET (dentro del contenedor db).
 VERIFY_SQL="
@@ -79,6 +110,7 @@ verify() {
 
 if [ "$mode" = "check" ]; then
     target="fartmar_restore_check_$(date -u +%Y%m%d%H%M%S)"
+    temp_db="$target"
     echo "[restore] Prueba de restauración en la BD temporal ${target}"
     db_sh -e TARGET="$target" -e DUMP="$REMOTE_FILE" db sh -c '
         createdb -U "$POSTGRES_USER" "$TARGET" \
@@ -87,9 +119,6 @@ if [ "$mode" = "check" ]; then
     verify "$target" || status=1
     if [ "$keep" = "true" ]; then
         echo "[restore] BD temporal conservada: ${target} (bórrela con dropdb)"
-    else
-        db_sh -e TARGET="$target" db sh -c 'dropdb -U "$POSTGRES_USER" "$TARGET"'
-        echo "[restore] BD temporal ${target} borrada"
     fi
     exit "$status"
 fi

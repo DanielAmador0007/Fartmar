@@ -17,6 +17,10 @@ set -euo pipefail
 # Git Bash en Windows reescribe rutas que empiezan con "/" (db:/tmp/...).
 export MSYS_NO_PATHCONV=1
 
+# Los respaldos traen datos de pacientes (cifrados) y del kardex: solo el
+# usuario que los crea puede leerlos.
+umask 077
+
 cd "$(dirname "$0")/.."
 COMPOSE="${COMPOSE:-docker compose}"
 OUT_DIR="${1:-backups}"
