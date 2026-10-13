@@ -44,25 +44,49 @@ final class AlertService
     {
         $today = BusinessDate::today();
 
-        $stocks = $this->expiringQuery($today, $warehouseId)
-            ->with(['warehouse', 'product', 'lot'])
-            ->orderBy('lots.expires_at')
-            ->orderBy('stocks.warehouse_id')
-            ->orderBy('stocks.lot_id')
-            ->limit($limit)
-            ->get();
-
-        $alerts = [];
-        foreach ($stocks as $stock) {
-            $alerts[] = new ExpiringLotAlert($stock, $this->daysUntil($today, $stock->lot->expires_at));
-        }
-
-        return $alerts;
+        return $this->alertsFor($this->expiringQuery($today, $warehouseId), $today, $limit);
     }
 
     public function countExpiringLots(?int $warehouseId = null): int
     {
         return $this->expiringQuery(BusinessDate::today(), $warehouseId)->count();
+    }
+
+    /**
+     * Existencias con unidades cuyo lote AÚN NO vence y vence dentro de los
+     * próximos $days días (de hoy a hoy + $days, ambos incluidos). A
+     * diferencia de expiringLots(), no incluye los vencidos y la ventana la
+     * elige quien pregunta (asistente IA). Ordenadas por vencimiento.
+     *
+     * @return list<ExpiringLotAlert>
+     */
+    public function lotsExpiringWithin(int $days, ?int $warehouseId = null, ?int $productId = null, int $limit = self::DEFAULT_LIMIT): array
+    {
+        $today = BusinessDate::today();
+
+        return $this->alertsFor(
+            $this->stockWithUnitsQuery($warehouseId, $productId)
+                ->whereBetween('lots.expires_at', [$today->toDateString(), $today->addDays($days)->toDateString()]),
+            $today,
+            $limit,
+        );
+    }
+
+    /**
+     * Existencias con unidades de lotes YA vencidos (expires_at < hoy, S-14):
+     * no se pueden dispensar ni trasladar y hay que darlas de baja (S-51).
+     *
+     * @return list<ExpiringLotAlert>
+     */
+    public function expiredLots(?int $warehouseId = null, ?int $productId = null, int $limit = self::DEFAULT_LIMIT): array
+    {
+        $today = BusinessDate::today();
+
+        return $this->alertsFor(
+            $this->stockWithUnitsQuery($warehouseId, $productId)->where('lots.expires_at', '<', $today->toDateString()),
+            $today,
+            $limit,
+        );
     }
 
     /**
@@ -97,12 +121,43 @@ final class AlertService
      */
     private function expiringQuery(CarbonImmutable $today, ?int $warehouseId): Builder
     {
+        return $this->stockWithUnitsQuery($warehouseId, null)
+            ->where('lots.expires_at', '<=', $today->addDays($this->expiryDays())->toDateString());
+    }
+
+    /**
+     * @return Builder<Stock>
+     */
+    private function stockWithUnitsQuery(?int $warehouseId, ?int $productId): Builder
+    {
         return Stock::query()
             ->select('stocks.*')
             ->join('lots', 'lots.id', '=', 'stocks.lot_id')
             ->where('stocks.quantity', '>', 0)
-            ->where('lots.expires_at', '<=', $today->addDays($this->expiryDays())->toDateString())
-            ->when($warehouseId, fn ($q, $id) => $q->where('stocks.warehouse_id', $id));
+            ->when($warehouseId, fn ($q, $id) => $q->where('stocks.warehouse_id', $id))
+            ->when($productId, fn ($q, $id) => $q->where('stocks.product_id', $id));
+    }
+
+    /**
+     * @param  Builder<Stock>  $query
+     * @return list<ExpiringLotAlert>
+     */
+    private function alertsFor(Builder $query, CarbonImmutable $today, int $limit): array
+    {
+        $stocks = $query
+            ->with(['warehouse', 'product', 'lot'])
+            ->orderBy('lots.expires_at')
+            ->orderBy('stocks.warehouse_id')
+            ->orderBy('stocks.lot_id')
+            ->limit($limit)
+            ->get();
+
+        $alerts = [];
+        foreach ($stocks as $stock) {
+            $alerts[] = new ExpiringLotAlert($stock, $this->daysUntil($today, $stock->lot->expires_at));
+        }
+
+        return $alerts;
     }
 
     /**

@@ -514,3 +514,80 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
 - Riesgos o cosas que podrían estar mal:
   - Si el backend cambia textos de error, la interfaz los mostrará tal cual en los códigos sin mapa propio.
   - `CRITICAL_DAYS` (30) sigue fijo en el cliente; solo la ventana de alerta viene de la API.
+
+### 2026-10-12 — Fase 6: asistente IA de consulta de inventario (backend)
+- Agente: ia-asistente
+- Qué generó la IA:
+  - `app/Domain/Assistant`: interfaz `LlmProvider` (mensajes y herramientas en formato neutral), `LlmResponse`, `ToolCall`, `LlmProviderFactory`; proveedores `MockLlmProvider` (reglas/regex en español, determinista), `OllamaLlmProvider` (`/api/chat` con tools) y `AnthropicLlmProvider` (Messages API con tool use) sobre una base `HttpLlmProvider` que convierte cualquier falla en 503 `ASISTENTE_NO_DISPONIBLE`.
+  - `ToolRegistry` (lista blanca → Policy → argumentos conocidos y válidos con `Validator` → ejecución) y 7 herramientas de solo lectura que reutilizan `CatalogQuery`, `InventoryQuery`, `AlertService` y `TransferQuery`.
+  - `AssistantService` (bucle de hasta 4 llamadas, 5 herramientas por turno), `QuestionGuard` (entrada), `OutputGuard` (salida), `SystemPrompt` fijo con el catálogo de bodegas.
+  - Endpoint `POST /api/v1/assistant/query` (Form Request, Gate `useAssistant`, limitador `assistant`, `AssistantAnswerResource`), `config/assistant.php`, `AssistantServiceProvider`, variables en `.env.example` y compose.
+  - `CatalogQuery`: búsqueda de productos sin tildes (`translate()` en SQL); `AlertService::lotsExpiringWithin()` y `expiredLots()`.
+  - `TransferSeeder` (un traslado en tránsito y uno con observación maliciosa), `tests/Assistant/eval.json` (18 casos) y `php artisan assistant:eval`.
+  - Pruebas: herramientas (lista blanca, rangos, argumentos extra, Policies por rol), servicio (mock, rechazos sin llamar al modelo, herramienta desconocida, inyección escapada, filtro de salida, límite del bucle, PII, logs), API (contrato, roles, 422, 429, 503), proveedores con `Http::fake`, seeder y comando de evaluación. OpenAPI 0.6.0, supuestos S-89…S-96, `docs/asistente-ia.md`.
+- Qué decisión tomó y por qué:
+  - **Rechazar antes del modelo** las preguntas de pacientes/SQL/escritura/inyección: es determinista y evita mandar datos personales escritos por el usuario a un proveedor externo. El system prompt y el filtro de salida siguen como capas adicionales.
+  - **El mock pasa por el mismo bucle** que un modelo real (pide `search_products`, luego la herramienta, luego redacta con el `<tool_result>`), en vez de que el servicio responda directo. Así el eval prueba validación, autorización y serialización de verdad.
+  - **`JSON_HEX_TAG`** al serializar resultados: un `</tool_result>` escrito en una observación no puede cerrar el bloque de datos.
+  - **Gate `useAssistant` = `StockPolicy::viewAny`** (farmacia y auditor) y cada herramienta vuelve a autorizar con su Policy: sin `if` de roles.
+  - El catálogo de bodegas va en el system prompt para que el modelo (y el mock) traduzca "farmacia central" a `FAR-CEN` sin una llamada extra.
+  - `TransferSeeder` usa `TransferService` (no `updateOrCreate`): el despacho debe mover stock por el kardex; la idempotencia es por la observación exacta. Se ajustó `SeederTest` porque ahora hay una `SALIDA_TRASLADO` en la semilla.
+  - Flujo en lenguaje simple: el usuario pregunta; el servidor primero mira si la pregunta es de pacientes o pide algo prohibido y, si es así, contesta él mismo. Si no, le pasa al modelo las reglas, la pregunta y la lista de herramientas. El modelo pide, por ejemplo, "busca acetaminofén" y luego "lotes que vencen en 60 días en FAR-CEN"; el servidor revisa que la herramienta exista, que el usuario tenga permiso y que los datos tengan sentido, la ejecuta y le devuelve el resultado marcado como dato. Al final revisa la respuesta del modelo antes de mostrarla.
+- Puntos que Daniel debe revisar/entender:
+  - El orden de `ToolRegistry::execute()` (lista blanca → Policy → argumentos) y por qué la Policy va antes (no revela qué códigos existen).
+  - Qué ve un proveedor externo exactamente (`ScriptedLlmProvider` en las pruebas lo registra) y por qué nunca hay datos de pacientes.
+  - Las reglas de `QuestionGuard` y `OutputGuard` son listas de patrones: conocer sus falsos positivos (S-92, S-93).
+  - El eval asume la semilla limpia: en la BD de desarrollo actual da 17/18 porque la demo de la Fase 5 agotó L-ACE-2402 en Farmacia Central (la respuesta "no hay lotes" es correcta para esos datos). Con `make fresh` da 18/18.
+- Riesgos o cosas que podrían estar mal:
+  - Los proveedores Ollama y Anthropic solo se probaron con `Http::fake`, no contra un servidor real: el formato sigue la documentación pública (`/api/chat` con `tools`; Messages API `2023-06-01` con `tool_use`/`tool_result`). El nombre de modelo por defecto `claude-sonnet-5-5` debe confirmarse contra los modelos disponibles de la cuenta.
+  - El mock no entiende sinónimos ni frases muy distintas a las del eval; es un simulador, no un modelo.
+  - Los filtros por patrones pueden bloquear una pregunta legítima ("¿cambia el stock…?") o dejar pasar una inyección ingeniosa; por eso hay varias capas y ninguna herramienta escribe ni devuelve datos de pacientes.
+  - `docker-compose.yml` agrega `extra_hosts: host.docker.internal:host-gateway`; requiere recrear el contenedor `api` para que tome las variables nuevas (los valores por defecto de `config/assistant.php` ya coinciden).
+  - El eval lee `tests/Assistant/eval.json`; si la imagen de producción (Fase 7) excluye `tests/`, habrá que copiar ese archivo o correr el eval en CI con el código fuente.
+
+### 2026-10-12 — Fase 6: pantalla del asistente IA (frontend)
+- Agente: frontend-react
+- Qué generó la IA:
+  - `api/types.ts` (cabecera a 0.6.0): `AssistantQueryRequest`, `AssistantAnswer`, `AssistantToolUse`, `UntrustedText` y `AssistantResult` como unión discriminada por `tool` (filas de `get_stock`, `get_expiring_lots`/`get_expired_lots`, `get_below_minimum`, `get_transfers`, `list_warehouses`).
+  - `features/assistant/assistantApi.ts` (mutación `useAskAssistant`, límites 3–500), `AssistantPage.tsx` (caja con contador, Enter/Shift+Enter, ejemplos clicables, "Consultando…", historial en memoria, rechazo/fuera de alcance diferenciados, herramientas plegables con el proveedor) y `AssistantResultTable.tsx` (tabla por herramienta, aviso de `truncated`, observación no confiable marcada).
+  - `errors.ts`: mensaje para `ASISTENTE_NO_DISPONIBLE` (`DEMASIADAS_SOLICITUDES` ya existía; se agregó su prueba).
+  - Permiso `askAssistant` (auxiliar, regente, auditor), ruta `/asistente` y entrada "Asistente" en el menú; estilos en `index.css`.
+  - Pruebas (`assistant.test.tsx`, 14): respuesta + tabla + herramientas, Enter/Shift+Enter, doble clic = una petición, ejemplo con un clic, refused vs out_of_scope, observación con `<script>`/`<img onerror>` como texto, 503 y 429 comprensibles, validación de longitud, menú y pantalla por rol. Se actualizó la prueba de navegación por rol. Total: 120 pruebas Vitest.
+- Qué decisión tomó y por qué:
+  - El permiso se llama `askAssistant` y no `useAssistant` (como el Gate del backend) para que ESLint no lo confunda con un hook de React.
+  - Pregunta por mutación aunque no cambia datos: cada pregunta es una acción del usuario, no se cachea y no se reintenta sola.
+  - Tablas con columnas fijas por herramienta en vez de una tabla genérica: más legible y tipada; lo desconocido no se pinta.
+  - Supuestos S-97 (historial en memoria, orden, ejemplos, teclado) y S-98 (texto plano, notas no confiables, detalle plegable).
+  - Se verificó que la prueba de doble clic falla si se quita `useSubmitGuard` y la deshabilitación del botón.
+- Puntos que Daniel debe revisar/entender:
+  - Por qué React ya protege contra XSS al pintar `{texto}` y qué rompería esa garantía (`dangerouslySetInnerHTML`, `href` con `javascript:`).
+  - `useSubmitGuard` + `disabled={isPending}`: por qué hacen falta los dos.
+  - `AssistantResult` como unión discriminada: el `switch (result.tool)` en `AssistantResultTable`.
+- Riesgos o cosas que podrían estar mal:
+  - Si el backend cambia la forma de las filas de una herramienta, la tabla puede romperse en tiempo de ejecución (los tipos son a mano, sin validación en runtime).
+  - No se probó contra la API real en Docker desde esta tarea (solo con el simulador `mockApi`); conviene una prueba manual con `mock` y la semilla limpia.
+  - Con un proveedor real la respuesta puede tardar varios segundos; solo hay "Consultando…", sin botón de cancelar.
+
+### 2026-10-12 — Fase 6: corrección de los hallazgos del revisor-senior (asistente IA)
+- Agente: ia-asistente
+- Qué generó la IA:
+  - **A1** `ToolResult` separa los datos de la UI (`data`) de los del modelo (`modelData`); `AssistantTool::forModel()` y `GetTransfersTool` cambian `notes` por `has_notes`. La UI conserva `{untrusted, text}`.
+  - **M1/M3** `QuestionGuard`: números de 7+ dígitos (con espacios, puntos o guiones; sin fechas ni códigos con prefijo) como dato personal; escritura solo en imperativo; teléfono/dirección "de la farmacia/bodega" y "dispensación" a secas ya no se rechazan. `OutputGuard`: 9+ dígitos o 6+ tras CC/NIT/teléfono/celular, en vez de 7+ dígitos sueltos. `Text::joinDigitGroups()`.
+  - **M2** `tools_used` con argumentos validados (textos a 100) o `{}` si se rechazó.
+  - **M5** `InventoryQuery::totals()` (consulta agregada) para `total_quantity`/`available_quantity`.
+  - **M4** eval: `expected_tool_ok`, `expected_result_count`, `expected_result_contains`, `expected_answer_contains_any`; aviso de semilla modificada. Ollama no estaba disponible en el host: documentado cómo correrlo.
+  - **L2** `is_error` en `tool_result` y `stop_reason: max_tokens` → mensaje seguro. **L4** `HttpClientException`/`GuzzleException` → 503. **L5** comentario de `JSON_HEX_TAG` reescrito. **L6** redacción de `question`, `answer`, `messages`, `prompt`. **L7** key de filas con `product.id`. **L9** 503 sin `details.provider` (OpenAPI 0.6.1).
+  - Supuestos S-91, S-92, S-93, S-95 y S-96 actualizados; `docs/asistente-ia.md`.
+- Qué decisión tomó y por qué:
+  - Para A1 se eligió no enviar el texto en absoluto (en vez de enmascararlo): con `has_notes` el modelo puede decir "hay observaciones, mírelas en la tabla" y no hay nada que filtrar ni que pueda inyectar.
+  - En la entrada se mantuvo el umbral de 7 dígitos que pidió la revisión (un lote numérico de 7+ dígitos en la pregunta se rechaza; costo aceptado y documentado). En la salida se subió a 9 para no bloquear lotes o fechas de 8 dígitos, conservando el bloqueo de la cédula sembrada (10 dígitos) y de cualquier número tras CC/teléfono.
+  - El comentario de L5 y una línea de S-93 se habían corrompido porque las secuencias de escape unicode escritas por la IA se convirtieron en los caracteres reales al guardar; ahora se describen con palabras.
+  - L3 no se aplicó por indicación del coordinador (`claude-sonnet-5-5` es válido).
+- Puntos que Daniel debe revisar/entender:
+  - Las dos vistas de `ToolResult` y por qué la tabla de la UI sí muestra la observación pero el modelo no.
+  - Que los regex son higiene: la defensa real es que las herramientas solo leen inventario autorizado.
+  - Los campos nuevos de `eval.json` y cómo evaluar un modelo real con `--provider=ollama --threshold=…`.
+- Riesgos o cosas que podrían estar mal:
+  - El eval con Ollama no se ejecutó (no hay Ollama en el host); Anthropic sigue probado solo con `Http::fake`.
+  - Un nombre propio en la pregunta no se detecta y viajaría a un proveedor externo; mitigación: mock u Ollama.
+  - Durante la corrección Docker Desktop se detuvo solo; se volvió a abrir la aplicación (sin tocar contenedores ajenos) y los contenedores de fartmar arrancaron sanos.

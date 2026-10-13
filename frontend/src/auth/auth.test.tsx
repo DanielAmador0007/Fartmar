@@ -146,10 +146,10 @@ describe('Cambio de clave obligatorio', () => {
 
 describe('Navegación por rol', () => {
   const cases: [Role, string[]][] = [
-    ['auxiliar_farmacia', ['Dispensación', 'Traslados', 'Inventario', 'Kardex', 'Pacientes']],
-    ['regente_farmacia', ['Dispensación', 'Autorizaciones', 'Traslados', 'Inventario', 'Kardex', 'Pacientes']],
+    ['auxiliar_farmacia', ['Dispensación', 'Traslados', 'Inventario', 'Kardex', 'Pacientes', 'Asistente']],
+    ['regente_farmacia', ['Dispensación', 'Autorizaciones', 'Traslados', 'Inventario', 'Kardex', 'Pacientes', 'Asistente']],
     ['medico', ['Pacientes']],
-    ['auditor', ['Traslados', 'Inventario', 'Kardex', 'Pacientes']],
+    ['auditor', ['Traslados', 'Inventario', 'Kardex', 'Pacientes', 'Asistente']],
     ['admin', ['Usuarios']],
   ]
 

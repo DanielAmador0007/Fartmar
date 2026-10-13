@@ -40,6 +40,8 @@ final class RedactSensitiveData implements ProcessorInterface
     private const SENSITIVE_KEYS = [
         'name', 'first_name', 'last_name', 'full_name', 'patient_name', 'username',
         'birth_date', 'dob', 'bindings',
+        // Asistente IA: texto libre que puede traer datos personales (S-95).
+        'question', 'answer', 'messages', 'prompt',
     ];
 
     /** Claves que se redactan si CONTIENEN alguno de estos fragmentos. */

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: FARTMAR IPS — API de dispensación e inventario
-  version: 0.5.1
+  version: 0.6.1
   description: |
     API REST del sistema de dispensación, inventario por lote y traslados.
 
@@ -11,6 +11,7 @@ info:
     - Ningún endpoint de dispensación expone nombre ni documento del paciente: el detalle trae solo `patient_id` y el listado ni eso (S-87). Los datos personales salen solo por `/patients/*`, enmascarados para el rol `auditor` (`masked: true`), y cada lectura queda en `patient_access_logs` (RN-10, S-68, S-75).
     - Correlación (S-74): toda respuesta trae `X-Correlation-Id` (UUID generado por el servidor; es el que queda en logs y bitácoras). Si el cliente envía su propio `X-Correlation-Id` válido (`[A-Za-z0-9-]{1,64}`), se devuelve aparte en `X-Client-Correlation-Id`.
     - Contraseña temporal (S-77): un usuario creado o restablecido por el admin tiene `must_change_password: true`; hasta cambiarla con `POST /auth/password`, todo endpoint salvo `auth/me`, `auth/password` y `auth/logout` responde 403 `CAMBIO_CLAVE_REQUERIDO`.
+    - Asistente IA (`POST /assistant/query`, desde 0.6.0): consultas de inventario en lenguaje natural con herramientas de solo lectura; nunca devuelve datos de pacientes (S-89…S-96).
     - Límite de solicitudes: todos los endpoints autenticados admiten `API_RATE_LIMIT_PER_MINUTE` (120 por defecto) solicitudes por minuto por usuario; al superarlo responden 429 `DEMASIADAS_SOLICITUDES` con `Retry-After` (S-47).
 servers:
   - url: http://localhost:8080/api/v1
@@ -24,6 +25,7 @@ tags:
   - name: Pacientes
   - name: Usuarios
   - name: Catálogos
+  - name: Asistente IA
 
 security:
   - bearerAuth: []
@@ -905,6 +907,76 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
+  /assistant/query:
+    post:
+      tags: [Asistente IA]
+      summary: Preguntar al asistente de inventario en lenguaje natural
+      description: |
+        El modelo (proveedor según `LLM_PROVIDER`: `mock` por defecto, `ollama` o `anthropic`) solo puede pedir
+        herramientas de **solo lectura** de una lista blanca: `search_products`, `list_warehouses`, `get_stock`,
+        `get_expiring_lots` (`days` 1–365), `get_expired_lots`, `get_below_minimum`, `get_transfers`. El servidor valida
+        los argumentos y autoriza cada herramienta con las Policies del usuario. No hay SQL libre ni escritura.
+
+        - Preguntas sobre pacientes, prescripciones o dispensaciones, pedidos de SQL, de modificar datos o de cambiar las
+          instrucciones se rechazan **sin llamar al modelo** (`outcome: refused`, 200).
+        - Fuera de alcance → `outcome: out_of_scope` con la respuesta estándar: "Solo puedo responder consultas de
+          inventario, lotes, vencimientos, stock mínimo y traslados. No encontré información para eso."
+        - Si la respuesta del modelo trae datos fuera de alcance (documentos, `SYSTEM:`, el system prompt), el servidor la
+          reemplaza (`outcome: refused`, `result: null`).
+        - `answer` es **texto plano** con saltos de línea; mostrarlo como texto, nunca como HTML. Las observaciones de
+          traslados en `result.rows[].notes` vienen como `{untrusted: true, text}`; ese texto nunca se envía al modelo (solo sabe si existe).
+
+        Roles: `auxiliar_farmacia`, `regente_farmacia`, `auditor` (Gate `useAssistant` = puede leer inventario, S-89).
+        Límite propio: `ASSISTANT_RATE_LIMIT_PER_MINUTE` (10) preguntas por minuto por usuario, además del general.
+        Puede tardar varios segundos con un proveedor real (hasta 4 llamadas al modelo de `LLM_TIMEOUT` s cada una).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantQueryRequest' }
+            example: { question: '¿Qué lotes de acetaminofén vencen en los próximos 60 días en la farmacia central?' }
+      responses:
+        '200':
+          description: Respuesta del asistente (también para rechazos y fuera de alcance; ver `outcome`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AssistantAnswer' }
+              example:
+                data:
+                  answer: "Lotes de Acetaminofén 500 mg que vencen en los próximos 60 días en Farmacia Central:\n- L-ACE-2402 (Acetaminofén 500 mg) en Farmacia Central: 50 unidades, vence el 2026-11-01 (en 20 días)."
+                  outcome: answered
+                  provider: mock
+                  tools_used:
+                    - { name: search_products, arguments: { query: acetaminofen }, ok: true }
+                    - { name: get_expiring_lots, arguments: { days: 60, warehouse_code: FAR-CEN, product_id: 1 }, ok: true }
+                  result:
+                    tool: get_expiring_lots
+                    filters:
+                      days: 60
+                      product: { id: 1, code: ACE500, name: Acetaminofén 500 mg }
+                      warehouse: { code: FAR-CEN, name: Farmacia Central }
+                    count: 1
+                    truncated: false
+                    rows:
+                      - warehouse: { code: FAR-CEN, name: Farmacia Central }
+                        product: { id: 1, code: ACE500, name: Acetaminofén 500 mg }
+                        lot_number: L-ACE-2402
+                        expires_at: '2026-11-01'
+                        days_to_expire: 20
+                        quantity: 50
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503':
+          description: '`ASISTENTE_NO_DISPONIBLE`: el proveedor del modelo no respondió, falló o no está configurado. `details` vacío: sin detalles técnicos ni nombre del proveedor (queda en el log).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /warehouses:
     get:
       tags: [Catálogos]
@@ -1170,6 +1242,7 @@ components:
                 - AJUSTE_INVALIDO
                 - OPERACION_NO_PERMITIDA
                 - CAMBIO_CLAVE_REQUERIDO
+                - ASISTENTE_NO_DISPONIBLE
                 - ERROR_INTERNO
             message: { type: string, description: Mensaje en español para el usuario final }
             details: { type: object, additionalProperties: true }
@@ -1637,3 +1710,52 @@ components:
               min_quantity: { type: integer }
               available: { type: integer, description: Unidades en lotes no vencidos }
               shortfall: { type: integer }
+
+    AssistantQueryRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, minLength: 3, maxLength: 500 }
+
+    AssistantAnswer:
+      type: object
+      required: [answer, outcome, provider, tools_used, result]
+      properties:
+        answer: { type: string, description: Texto plano para mostrar (puede traer saltos de línea) }
+        outcome:
+          type: string
+          enum: [answered, refused, out_of_scope]
+          description: '`answered`: respondió con herramientas (con o sin filas); `refused`: rechazo del servidor o respuesta bloqueada por el filtro de salida; `out_of_scope`: respuesta estándar de fuera de alcance'
+        provider: { type: string, enum: [mock, ollama, anthropic] }
+        tools_used:
+          type: array
+          description: Herramientas que pidió el modelo, en orden, y si se ejecutaron. `arguments` son los argumentos validados y normalizados con que se ejecutó (textos recortados a 100 caracteres); `{}` si la herramienta fue rechazada (OpenAPI 0.6.1)
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              arguments: { type: object, additionalProperties: true }
+              ok: { type: boolean, description: false = rechazada (herramienta desconocida, sin permiso o argumentos inválidos) }
+        result:
+          description: |
+            Datos de la última herramienta de consulta ejecutada con éxito (no cuenta `search_products`), para pintar una
+            tabla; `null` si no hubo o si la respuesta fue bloqueada. Forma común: `{tool, filters, count, truncated, rows}`.
+            Filas por herramienta:
+            - `get_stock`: `{warehouse{code,name}, product{id,code,name}, lot_number, expires_at, is_expired, quantity}`;
+              además `total_quantity` y `available_quantity` (sin vencidos) de las filas devueltas.
+            - `get_expiring_lots` / `get_expired_lots`: `{warehouse, product, lot_number, expires_at, days_to_expire, quantity}`.
+            - `get_below_minimum`: `{warehouse, product, min_quantity, available, shortfall}`.
+            - `get_transfers`: `{id, status, origin, destination, items[{product, quantity_requested}], requested_at,
+              dispatched_at, received_at, notes: {untrusted: true, text} | null}`.
+            - `list_warehouses`: `{code, name}` (sin `truncated`).
+            Máximo 50 filas (20 traslados); `truncated: true` si hay más.
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [tool, rows]
+              properties:
+                tool: { type: string, enum: [list_warehouses, get_stock, get_expiring_lots, get_expired_lots, get_below_minimum, get_transfers] }
+                filters: { type: object, additionalProperties: true }
+                count: { type: integer }
+                truncated: { type: boolean }
+                rows: { type: array, items: { type: object, additionalProperties: true } }

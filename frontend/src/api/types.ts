@@ -1,4 +1,4 @@
-// Tipos de la API v1, escritos A MANO contra docs/openapi.yaml (0.5.1), que es la
+// Tipos de la API v1, escritos A MANO contra docs/openapi.yaml (0.6.0), que es la
 // fuente de verdad. Compromiso aceptado: no se generan desde el OpenAPI para no
 // agregar herramientas; al cambiar el contrato hay que actualizar este archivo.
 // Solo se tipan los campos que usa la interfaz.
@@ -331,4 +331,97 @@ export interface TransferDiscrepancy {
   resolved_by: UserSummary | null
   resolved_at: string | null
   created_at: string
+}
+
+// --- Asistente IA (POST /assistant/query, desde 0.6.0) ---
+
+export interface AssistantQueryRequest {
+  question: string
+}
+
+export type AssistantOutcome = 'answered' | 'refused' | 'out_of_scope'
+
+export interface AssistantToolUse {
+  name: string
+  arguments: Record<string, unknown>
+  ok: boolean
+}
+
+interface AssistantWarehouseRef {
+  code: string
+  name: string
+}
+
+interface AssistantProductRef {
+  id: number
+  code: string
+  name: string
+}
+
+// Texto de una observación de traslado: dato NO confiable (puede traer intentos de inyección).
+export interface UntrustedText {
+  untrusted: true
+  text: string
+}
+
+export interface AssistantStockRow {
+  warehouse: AssistantWarehouseRef
+  product: AssistantProductRef
+  lot_number: string
+  expires_at: string
+  is_expired: boolean
+  quantity: number
+}
+
+export interface AssistantLotRow {
+  warehouse: AssistantWarehouseRef
+  product: AssistantProductRef
+  lot_number: string
+  expires_at: string
+  days_to_expire: number
+  quantity: number
+}
+
+export interface AssistantBelowMinimumRow {
+  warehouse: AssistantWarehouseRef
+  product: AssistantProductRef
+  min_quantity: number
+  available: number
+  shortfall: number
+}
+
+export interface AssistantTransferRow {
+  id: number
+  status: TransferStatus
+  origin: AssistantWarehouseRef
+  destination: AssistantWarehouseRef
+  items: { product: AssistantProductRef; quantity_requested: number }[]
+  requested_at: string | null
+  dispatched_at: string | null
+  received_at: string | null
+  notes: UntrustedText | null
+}
+
+interface AssistantResultBase {
+  filters?: Record<string, unknown>
+  count?: number
+  truncated?: boolean
+}
+
+// Datos de la última herramienta de consulta (para la tabla). `tool` discrimina la forma de las filas.
+export type AssistantResult = AssistantResultBase &
+  (
+    | { tool: 'list_warehouses'; rows: AssistantWarehouseRef[] }
+    | { tool: 'get_stock'; rows: AssistantStockRow[]; total_quantity?: number; available_quantity?: number }
+    | { tool: 'get_expiring_lots' | 'get_expired_lots'; rows: AssistantLotRow[] }
+    | { tool: 'get_below_minimum'; rows: AssistantBelowMinimumRow[] }
+    | { tool: 'get_transfers'; rows: AssistantTransferRow[] }
+  )
+
+export interface AssistantAnswer {
+  answer: string
+  outcome: AssistantOutcome
+  provider: string
+  tools_used: AssistantToolUse[]
+  result: AssistantResult | null
 }

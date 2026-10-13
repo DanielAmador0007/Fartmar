@@ -31,4 +31,25 @@ final class InventoryQuery
             ->orderBy('stocks.lot_id')
             ->paginate($filters['per_page'] ?? 50);
     }
+
+    /**
+     * Totales de TODAS las existencias del filtro (no solo de una página):
+     * unidades en total y disponibles (lotes no vencidos, RN-01).
+     *
+     * @param  array{warehouse_id?: int|null, product_id?: int|null}  $filters
+     * @return array{total: int, available: int}
+     */
+    public function totals(array $filters): array
+    {
+        $row = Stock::query()
+            ->join('lots', 'lots.id', '=', 'stocks.lot_id')
+            ->when($filters['warehouse_id'] ?? null, fn ($q, $id) => $q->where('stocks.warehouse_id', $id))
+            ->when($filters['product_id'] ?? null, fn ($q, $id) => $q->where('stocks.product_id', $id))
+            ->selectRaw('COALESCE(SUM(stocks.quantity), 0) AS total')
+            ->selectRaw('COALESCE(SUM(CASE WHEN lots.expires_at >= ? THEN stocks.quantity ELSE 0 END), 0) AS available', [BusinessDate::today()->toDateString()])
+            ->toBase()
+            ->first();
+
+        return ['total' => (int) ($row->total ?? 0), 'available' => (int) ($row->available ?? 0)];
+    }
 }

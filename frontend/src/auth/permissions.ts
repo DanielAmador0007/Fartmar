@@ -16,6 +16,8 @@ export const permissions = {
   viewTransfers: (role: Role) => [...PHARMACY, 'auditor'].includes(role),
   createTransfer: (role: Role) => PHARMACY.includes(role),
   resolveDiscrepancy: (role: Role) => role === 'regente_farmacia',
+  // Asistente IA: mismos roles que leen inventario (Gate useAssistant, S-89).
+  askAssistant: (role: Role) => [...PHARMACY, 'auditor'].includes(role),
   manageUsers: (role: Role) => role === 'admin',
 } satisfies Record<string, (role: Role) => boolean>
 
@@ -35,6 +37,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/inventario', label: 'Inventario', permission: 'viewInventory' },
   { to: '/kardex', label: 'Kardex', permission: 'viewInventory' },
   { to: '/pacientes', label: 'Pacientes', permission: 'viewPatients' },
+  { to: '/asistente', label: 'Asistente', permission: 'askAssistant' },
   { to: '/usuarios', label: 'Usuarios', permission: 'manageUsers' },
 ]
 

@@ -118,6 +118,11 @@ function authorizationEndpoints(): array
         'GET warehouses' => [Role::cases(), fn () => test()->getJson('/api/v1/warehouses')],
         'GET products' => [Role::cases(), fn () => test()->getJson('/api/v1/products?q=med')],
 
+        // Fase 6: asistente IA (S-89, Gate useAssistant = leer inventario).
+        'POST assistant/query' => [[...$pharmacy, Role::Auditor], fn () => test()->postJson('/api/v1/assistant/query', [
+            'question' => '¿Qué bodegas existen?',
+        ])],
+
         'GET users' => [[Role::Admin], fn () => test()->getJson('/api/v1/users')],
         'POST users' => [[Role::Admin], fn () => test()->postJson('/api/v1/users', [
             'name' => 'Usuario Matriz', 'email' => 'matriz.'.Str::lower(Str::random(8)).'@fartmar.test',

@@ -6,6 +6,7 @@ import { LoginPage } from './auth/LoginPage'
 import { navItemsFor, type Permission } from './auth/permissions'
 import { RequireAuth, RequirePermission } from './auth/RequireAuth'
 import { Layout } from './components/Layout'
+import { AssistantPage } from './features/assistant/AssistantPage'
 import { AuthorizationsPage } from './features/dispensing/AuthorizationsPage'
 import { DispensingPage } from './features/dispensing/DispensingPage'
 import { InventoryPage } from './features/inventory/InventoryPage'
@@ -53,6 +54,7 @@ export default function App() {
         <Route path="inventario" element={guarded('viewInventory', <InventoryPage />)} />
         <Route path="kardex" element={guarded('viewInventory', <KardexPage />)} />
         <Route path="pacientes" element={guarded('viewPatients', <PatientsPage />)} />
+        <Route path="asistente" element={guarded('askAssistant', <AssistantPage />)} />
         <Route path="usuarios" element={guarded('manageUsers', <UsersPage />)} />
         <Route path="*" element={<p>Página no encontrada.</p>} />
       </Route>

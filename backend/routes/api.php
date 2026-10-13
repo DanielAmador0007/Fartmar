@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AlertController;
+use App\Http\Controllers\AssistantController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CatalogController;
 use App\Http\Controllers\DispensationController;
@@ -92,6 +93,12 @@ Route::prefix('v1')->group(function (): void {
         // Catálogos de solo lectura (todos los roles activos).
         Route::get('warehouses', [CatalogController::class, 'warehouses'])->name('warehouses.index');
         Route::get('products', [CatalogController::class, 'products'])->name('products.index');
+
+        // Asistente IA de inventario (Parte C): solo lectura, Gate useAssistant (S-89).
+        // Limitador "assistant": 10/min por usuario (cada pregunta puede llamar varias veces al modelo).
+        Route::post('assistant/query', [AssistantController::class, 'query'])
+            ->middleware('throttle:assistant')
+            ->name('assistant.query');
 
         // Administración de usuarios (solo admin; sin DELETE, se desactiva).
         Route::get('users', [UserController::class, 'index'])->name('users.index');

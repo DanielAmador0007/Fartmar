@@ -45,11 +45,21 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       # Logs JSON a stderr con correlation_id y redacción de datos personales.
       LOG_CHANNEL: ${LOG_CHANNEL:-json}
+      # Asistente IA (config/assistant.php). LLM_API_KEY sin valor por defecto: viene del .env.
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5-5}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30}
+      ASSISTANT_RATE_LIMIT_PER_MINUTE: ${ASSISTANT_RATE_LIMIT_PER_MINUTE:-10}
       ALERT_EXPIRY_DAYS: ${ALERT_EXPIRY_DAYS:-90}
       # servidor embebido de PHP con varios workers: permite peticiones simultáneas.
       PHP_CLI_SERVER_WORKERS: 4
       COMPOSER_CACHE_DIR: /tmp/composer-cache
+    # Linux: host.docker.internal no existe por defecto (Docker Desktop sí lo trae).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${API_HOST_PORT:-8080}:8080"
     volumes:

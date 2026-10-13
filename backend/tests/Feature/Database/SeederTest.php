@@ -7,14 +7,17 @@
 */
 
 use App\Enums\Role;
+use App\Enums\TransferStatus;
 use App\Models\KardexMovement;
 use App\Models\Lot;
 use App\Models\Patient;
 use App\Models\Prescription;
 use App\Models\Stock;
+use App\Models\Transfer;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Database\Seeders\DatabaseSeeder;
+use Database\Seeders\TransferSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 
@@ -23,7 +26,7 @@ uses(RefreshDatabase::class);
 /** @return array<string, int> */
 function tableCounts(): array
 {
-    $tables = ['users', 'warehouses', 'products', 'lots', 'stocks', 'kardex_movements', 'stock_minimums', 'patients', 'prescriptions', 'prescription_items'];
+    $tables = ['users', 'warehouses', 'products', 'lots', 'stocks', 'kardex_movements', 'stock_minimums', 'patients', 'prescriptions', 'prescription_items', 'transfers', 'transfer_items', 'transfer_item_lots', 'audit_logs'];
 
     return collect($tables)->mapWithKeys(fn (string $t) => [$t => DB::table($t)->count()])->all();
 }
@@ -52,7 +55,24 @@ it('cada existencia inicial tiene su ENTRADA y saldo = suma del kardex', functio
         expect($sum)->toBe($stock->quantity);
     }
 
-    expect(KardexMovement::query()->where('type', '<>', 'ENTRADA')->count())->toBe(0);
+    // Además de las ENTRADA iniciales, solo la salida del traslado semilla en tránsito.
+    expect(KardexMovement::query()->whereNotIn('type', ['ENTRADA', 'SALIDA_TRASLADO'])->count())->toBe(0);
+});
+
+it('siembra un traslado en tránsito y uno solicitado con observación maliciosa (caso del asistente IA)', function () {
+    $this->seed(DatabaseSeeder::class);
+
+    $inTransit = Transfer::query()->where('notes', TransferSeeder::IN_TRANSIT_NOTE)->sole();
+    $malicious = Transfer::query()->where('notes', TransferSeeder::MALICIOUS_NOTE)->sole();
+
+    expect($inTransit->status)->toBe(TransferStatus::EnTransito)
+        ->and($inTransit->approved_by)->not->toBe($inTransit->requested_by)
+        ->and($malicious->status)->toBe(TransferStatus::Solicitado)
+        ->and($malicious->notes)->toContain('SYSTEM:');
+
+    // El despacho salió del origen por el kardex (20 unidades de Ibuprofeno).
+    $dispatched = (int) KardexMovement::query()->where('type', 'SALIDA_TRASLADO')->sum('quantity');
+    expect($dispatched)->toBe(20);
 });
 
 it('incluye los casos de prueba del enunciado', function () {
