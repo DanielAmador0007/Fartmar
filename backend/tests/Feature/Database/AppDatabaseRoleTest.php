@@ -103,6 +103,51 @@ it('rechaza un nombre de rol inválido o una clave corta', function (array $over
     'clave corta' => [['fartmar.db_app_role.password' => 'corta']],
 ]);
 
+it('gestionado externamente: falla claro si el rol no existe y no lo crea (M3)', function () {
+    config(['fartmar.db_app_role.managed_externally' => true, 'fartmar.db_app_role.password' => null]);
+
+    $this->artisan('db:provision-app-role')
+        ->expectsOutputToContain('no existe')
+        ->assertFailed();
+
+    expect(DB::selectOne('select 1 as found from pg_roles where rolname = ?', [TEST_APP_ROLE]))->toBeNull();
+});
+
+it('gestionado externamente: solo aplica GRANT/REVOKE, sin ALTER ROLE ni clave (M3)', function () {
+    DB::statement('CREATE ROLE '.TEST_APP_ROLE.' LOGIN');
+    config(['fartmar.db_app_role.managed_externally' => true, 'fartmar.db_app_role.password' => null]);
+
+    $statements = [];
+    DB::listen(function ($query) use (&$statements) {
+        $statements[] = $query->sql;
+    });
+
+    $this->artisan('db:provision-app-role')->assertSuccessful();
+
+    expect(collect($statements)->filter(fn (string $sql) => str_contains($sql, 'ALTER ROLE') || str_contains($sql, 'CREATE ROLE')))->toBeEmpty()
+        ->and(appRoleCan('stocks', 'UPDATE'))->toBeTrue()
+        ->and(appRoleCan('stocks', 'TRUNCATE'))->toBeFalse()
+        ->and(appRoleCan('kardex_movements', 'UPDATE'))->toBeFalse();
+});
+
+it('si una sentencia falla, la clave no aparece en la excepción (B10)', function () {
+    // pg_monitor es un rol reservado de PostgreSQL: ALTER ROLE ... PASSWORD falla.
+    config([
+        'fartmar.db_app_role.username' => 'pg_monitor',
+        'fartmar.db_app_role.password' => 'clave-que-no-debe-filtrarse',
+    ]);
+
+    try {
+        $this->artisan('db:provision-app-role');
+        test()->fail('Se esperaba una excepción.');
+    } catch (RuntimeException $e) {
+        expect($e->getMessage())->not->toContain('clave-que-no-debe-filtrarse')
+            ->and($e->getMessage())->not->toContain('PASSWORD')
+            ->and($e->getMessage())->toContain('SQLSTATE')
+            ->and($e->getPrevious())->toBeNull();
+    }
+});
+
 it('rechaza usar como rol de la app el mismo usuario que migra', function () {
     $owner = (string) DB::selectOne('select current_user as name')->name;
     config(['fartmar.db_app_role.username' => $owner]);

@@ -109,6 +109,8 @@ services:
       # Rol con el que corren api y scheduler (S-101).
       DB_APP_USERNAME: ${DB_APP_USERNAME:-fartmar_app}
       DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Defina DB_APP_PASSWORD en .env (cp .env.example .env)}
+      # true = el DBA crea el rol y su clave; migrate solo aplica GRANT/REVOKE (S-112).
+      DB_APP_ROLE_MANAGED_EXTERNALLY: ${DB_APP_ROLE_MANAGED_EXTERNALLY:-false}
       ALLOW_GENERATED_KEYS: ${ALLOW_GENERATED_KEYS:-false}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
     volumes:

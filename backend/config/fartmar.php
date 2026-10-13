@@ -28,6 +28,9 @@ return [
     'db_app_role' => [
         'username' => env('DB_APP_USERNAME'),
         'password' => env('DB_APP_PASSWORD'),
+        // true = el DBA crea el rol y su clave; el comando solo aplica
+        // GRANT/REVOKE (el dueño no necesita CREATEROLE). S-112.
+        'managed_externally' => (bool) env('DB_APP_ROLE_MANAGED_EXTERNALLY', false),
     ],
 
 ];
