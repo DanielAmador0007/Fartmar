@@ -591,3 +591,35 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - El eval con Ollama no se ejecutó (no hay Ollama en el host); Anthropic sigue probado solo con `Http::fake`.
   - Un nombre propio en la pregunta no se detecta y viajaría a un proveedor externo; mitigación: mock u Ollama.
   - Durante la corrección Docker Desktop se detuvo solo; se volvió a abrir la aplicación (sin tocar contenedores ajenos) y los contenedores de fartmar arrancaron sanos.
+
+### 2026-10-13 — Fase 7: DevOps completo (imágenes, compose, CI/CD, respaldos)
+- Agente: devops-docker-ci
+- Qué generó la IA:
+  - `backend/Dockerfile` multi-stage (`base`, `vendor` con `composer install --no-dev` optimizado, `dev`, `production`): PHP-FPM 8.4, `pdo_pgsql`/`intl`/`pcntl`, opcache de producción, usuario `www-data`, código de solo lectura, sin `tests/`, healthcheck FastCGI a `/ready` (`cgi-fcgi`). Configuración en `docker/php/` (php.ini, pool FPM, `entrypoint.sh`, `entrypoint.dev.sh`, `migrate.sh`, `healthcheck.sh`).
+  - `frontend/Dockerfile`: build de Vite en Node 24 → `nginx-unprivileged`. `docker/nginx/`: SPA con fallback, FastCGI de `/api`, `/health`, `/ready`, access log JSON sin query string, `X-Correlation-Id`, CSP y demás headers, HSTS y `real_ip` comentados. `.dockerignore` por app.
+  - `docker-compose.yml` tipo producción (db, migrate one-shot, api, scheduler, web) y `docker-compose.dev.yml` (override de desarrollo con volumen de BD propio). `.env.example`, `Makefile` y `make.ps1` actualizados (`up` = producción, `dev`, `backup`, `restore`; `test`/`lint`/`eval`/`fresh` levantan dev solos).
+  - Backend: `config/trustedproxy.php` (ningún proxy por defecto) y `php artisan db:provision-app-role` (rol `fartmar_app` sin `TRUNCATE` ni DDL; kardex y bitácoras solo inserción), con 10 pruebas Pest nuevas.
+  - `scripts/backup.sh`, `restore.sh` (prueba en BD temporal con la invariante kardex = existencias, o `--into-live`), `smoke-test.sh`, `deploy.sh` (simulado por defecto).
+  - `.github/workflows/ci.yml`: backend-lint, frontend-lint, infra-lint, backend-test (Pest + eval), frontend-test, build-images (GHCR en main), deploy-staging (compose en el runner + smoke + respaldo/restauración), deploy-production (environment con revisores o `workflow_dispatch` con `DESPLEGAR`). `docs/DEPLOY.md`. Supuestos S-99…S-110.
+- Qué decisión tomó y por qué:
+  - **Migraciones en un servicio `migrate` one-shot** y no en el entrypoint de la API: varias réplicas no compiten y la API nunca arranca con el esquema a medias.
+  - **Llaves demo en un volumen compartido**: generarlas en cada entrypoint daba una llave distinta por contenedor y la API no podía descifrar lo que sembró `migrate`.
+  - **No confiar en `X-Forwarded-For`**: con FastCGI `REMOTE_ADDR` ya es el cliente; confiar en `*` (lo típico detrás de un proxy HTTP) habría permitido falsificar la IP de los limitadores. Se verificó: un login fallido con `X-Forwarded-For: 203.0.113.99` quedó en `audit_logs` con la IP real.
+  - **Rol de BD no dueño implementado**, no solo documentado: cierra el riesgo de `TRUNCATE` abierto desde la Fase 1. Se probó una dispensación completa (FEFO, `FOR UPDATE`, kardex) con ese rol.
+  - **Volumen de BD distinto para dev y demo**: cada modo tiene sus llaves.
+  - **Mismo artefacto en todo el pipeline**: se construye una vez, se sube a GHCR y se pasa a staging como artefacto.
+- Errores que aparecieron al verificar y se corrigieron:
+  - La primera corrida de Pest en el nuevo contenedor de desarrollo dio 492 fallas: compose pasaba `APP_KEY=""` y esa variable vacía tapaba la de `backend/.env` en cada `docker compose exec`. Se quitó con `!reset` en el override (las etiquetas no sobreviven a un merge YAML `<<`, hubo que ponerlas en cada servicio).
+  - Después fallaban 2 pruebas de N+1: el compose inyectaba `CACHE_STORE=database` y `BCRYPT_ROUNDS=12` como variables reales y `phpunit.xml` no los fuerza (el limitador consultaba la BD y las pruebas eran más lentas). Esos valores pasaron al `ENV` de la imagen de producción.
+  - `php artisan optimize` fallaba en la imagen por no existir `resources/views`: se usan `config:cache`, `route:cache` y `event:cache`.
+- Puntos que Daniel debe revisar/entender:
+  - Cómo se cruzan los logs: `request_id` de Nginx = `client_correlation_id` de Laravel, más el `correlation_id` del servidor.
+  - Por qué `TRUSTED_PROXIES` queda vacío detrás de Nginx con FastCGI y qué cambiar si se agrega un balanceador (`set_real_ip_from` en Nginx).
+  - Qué permisos tiene `fartmar_app` y por qué Pest no los ejercita (corre como dueño); el smoke de staging y la dispensación manual sí.
+  - `make up` ahora es el stack de producción; el de desarrollo es `make dev` (test/lint/eval lo levantan solos). El Vite del host sigue apuntando a `localhost:8080` (ahora Nginx).
+- Riesgos o cosas que podrían estar mal:
+  - **GitHub Actions no se ejecutó** (bloqueo de facturación): el workflow pasó actionlint y shellcheck, y sus pasos se reprodujeron en local (staging con las imágenes `:ci`, eval sobre BD nueva), pero las acciones de Docker (`build-push-action`, caché `gha`, push a GHCR, `upload-artifact`) y los environments solo se verán en GitHub.
+  - `deploy.sh` con `DRY_RUN=0` no se probó (necesita un registro con las imágenes del SHA).
+  - Si una función futura necesita otro permiso de BD (p. ej. `TRUNCATE` en una tabla de caché), en producción fallará aunque Pest pase: hay que actualizar `db:provision-app-role`.
+  - Al cambiar de volumen, los datos de desarrollo anteriores (`fartmar_db_data`) pasaron a ser la BD del stack de producción; se borraron en la verificación con `down -v`. Quedan las etiquetas locales `fartmar-api:ci` y `fartmar-web:ci` (mismas imágenes) que Daniel puede borrar.
+  - La CSP no se probó en un navegador real (no hay navegador en este entorno); se revisó que el build no tiene scripts ni estilos en línea.
