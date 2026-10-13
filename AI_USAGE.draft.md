@@ -10,7 +10,7 @@
 
 | Herramienta | Uso |
 |---|---|
-| **Claude Code** (CLI de Anthropic), modelo **Claude Opus 5.5** | Generación de código, pruebas, documentación y revisión. 184 de los 190 commits del repositorio llevan el trailer `Co-Authored-By: Claude Opus 5.5`. |
+| **Claude Code** (CLI de Anthropic), modelo **Claude Opus 5.5** | Generación de código, pruebas, documentación y revisión. Casi todos los commits llevan el trailer `Co-Authored-By: Claude Opus 5.5` (192 de 198 al 13-10-2026, antes de la última tanda de documentación; recontar con `git log --oneline | wc -l` y `git log --oneline --grep="Co-Authored-By" | wc -l`). |
 | **Subagentes de Claude Code** (`.claude/agents/*.md`, `model: inherit`, es decir, el mismo modelo de la sesión) | Cada fase se delegó a agentes especializados con instrucciones propias que remiten a `CLAUDE.md`. |
 | `CLAUDE.md` | Especificación maestra que leen todos los agentes: reglas RN-01…RN-11, roles, stack, decisiones ya tomadas, convenciones y definición de terminado. |
 | `PROMPT_ORQUESTADOR.md` y `docs/PROGRESO.md` | Prompt inicial por fases y documento de traspaso entre sesiones (estado, pendientes, lo que cada fase debe saber de la anterior). |
@@ -109,6 +109,9 @@ lista de arriba como propia si no lo hiciste. -->
 
 - Los proveedores Ollama y Anthropic solo se probaron con respuestas simuladas (`Http::fake`).
 - El frontend no se probó con clics en un navegador real durante el desarrollo (solo jsdom y humo HTTP).
-- GitHub Actions no pudo ejecutarse durante el desarrollo por un bloqueo de facturación; el pipeline se validó en local.
+- GitHub Actions no pudo ejecutarse durante casi todo el desarrollo (bloqueo de facturación) y el pipeline se validó en
+  local. Ya corre en verde en `main` ([run 38434686392](https://github.com/DanielAmador0007/Fartmar/actions/runs/38434686392):
+  lint, pruebas + eval, imágenes + Trivy, staging simulado y publicación en GHCR); el job de producción queda
+  *skipped* hasta crear el environment `production` con revisores.
 
 <!-- DANIEL: ajusta esta lista si ya probaste algo de esto por tu cuenta. -->

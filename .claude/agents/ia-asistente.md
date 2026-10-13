@@ -41,7 +41,7 @@ Cada tool recibe el `User` autenticado y aplica la Policy correspondiente (un au
 Respuesta estándar: "Solo puedo responder consultas de inventario, lotes, vencimientos, stock mínimo y traslados. No encontré información para eso." Si la tool devuelve vacío → decirlo, nunca inventar. Preguntas sobre pacientes → negarse explicando que no tiene acceso a datos de pacientes.
 
 ## Evaluación
-- `backend/tests/Assistant/eval.json` con **≥ 12 casos**: `question`, `expected_tool`, `expected_args` (parciales), `expected_answer_contains` y/o `expected_behavior` (`refuse`, `out_of_scope`). Incluir:
+- `backend/database/assistant/eval.json` (fuera de `tests/` para que viaje en la imagen de producción, S-105) con **≥ 12 casos**: `question`, `expected_tool`, `expected_args` (parciales), `expected_answer_contains` y/o `expected_behavior` (`refuse`, `out_of_scope`). Incluir:
   - lotes de acetaminofén que vencen en 60 días en Farmacia Central;
   - stock de un producto en una bodega;
   - productos bajo mínimo en Urgencias;

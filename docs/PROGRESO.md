@@ -50,8 +50,9 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 ## Bloqueos externos
 
-- **GitHub Actions no corre**: la cuenta tiene un bloqueo de facturación ("account is locked due to a billing
-  issue"). Daniel debe resolverlo en GitHub → Settings → Billing. Mientras tanto, validar en local.
+- ~~GitHub Actions no corre (bloqueo de facturación).~~ **Resuelto:** el run 38434686392 de `main` pasó en verde
+  (8 jobs, incluidos Trivy, staging simulado y GHCR). Pendiente de Daniel: crear el environment `production` con
+  revisores (README, "CI/CD: configurar la aprobación de producción"); hasta entonces producción queda *skipped*.
 
 ## Lo que las fases siguientes deben saber de la Fase 7
 
