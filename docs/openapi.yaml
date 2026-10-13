@@ -238,7 +238,7 @@ paths:
                       message: Esta solicitud ya se registró antes con datos diferentes. Si es una dispensación nueva, vuelva a intentarlo desde la pantalla (se generará una clave nueva).
                       details: { idempotency_key: 6f1c... }
         '422':
-          description: '`VALIDACION` (incluye falta de `Idempotency-Key`), `PRESCRIPCION_EXCEDIDA` o `PRESCRIPCION_NO_VIGENTE`'
+          description: '`VALIDACION` (incluye falta de `Idempotency-Key`), `PRESCRIPCION_EXCEDIDA`, `PRESCRIPCION_NO_VIGENTE` o `LOTE_VENCIDO` (el trigger `dispensation_item_lots_check_lot` rechazó un lote vencido, RN-01; solo si el lote venció entre la asignación FEFO y la escritura)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -344,7 +344,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '422':
-          description: '`PRESCRIPCION_NO_VIGENTE` o `PRESCRIPCION_EXCEDIDA`'
+          description: '`PRESCRIPCION_NO_VIGENTE`, `PRESCRIPCION_EXCEDIDA` o `LOTE_VENCIDO` (trigger `dispensation_item_lots_check_lot`, RN-01)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -598,6 +598,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: '`TRANSICION_INVALIDA` (no está APROBADO, p. ej. ya despachado), `STOCK_INSUFICIENTE` (con `warehouse_id`, `product_id`, `requested`, `available`) o `CONFLICTO_CONCURRENCIA`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`LOTE_VENCIDO` (el trigger `transfer_item_lots_check_lot` rechazó un lote vencido, RN-01; solo si el lote venció entre la asignación FEFO y la escritura)'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
