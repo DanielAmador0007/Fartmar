@@ -623,3 +623,27 @@ Materia prima para `AI_USAGE.md`. Cada entrada sigue el formato de CLAUDE.md §9
   - Si una función futura necesita otro permiso de BD (p. ej. `TRUNCATE` en una tabla de caché), en producción fallará aunque Pest pase: hay que actualizar `db:provision-app-role`.
   - Al cambiar de volumen, los datos de desarrollo anteriores (`fartmar_db_data`) pasaron a ser la BD del stack de producción; se borraron en la verificación con `down -v`. Quedan las etiquetas locales `fartmar-api:ci` y `fartmar-web:ci` (mismas imágenes) que Daniel puede borrar.
   - La CSP no se probó en un navegador real (no hay navegador en este entorno); se revisó que el build no tiene scripts ni estilos en línea.
+
+### 2026-10-13 — Correcciones de la revisión de la Fase 7
+- Agente: devops-docker-ci
+- Qué generó la IA:
+  - **A1/M1** `ci.yml`: `deploy-production` en push solo con `vars.PRODUCTION_REVIEWERS_CONFIGURED == 'true'` (si no, `workflow_dispatch` con `DESPLEGAR`); grupo de concurrencia por `run_id` en `main` y serialización solo en el job de producción. DEPLOY.md explica cómo crear el environment con *Required reviewers*, los secretos del smoke y la variable.
+  - **M2** `smoke-test.sh`: búsqueda de paciente, dispensación no controlada con `Idempotency-Key` y reintento con respuesta idéntica, kardex con una sola salida y pregunta al asistente; `SMOKE_DEMO_CHECKS=false` para producción.
+  - **M3/B10** `db:provision-app-role`: `DB_APP_ROLE_MANAGED_EXTERNALLY=true` (solo GRANT/REVOKE, falla si el rol no existe) y errores sin el SQL. 3 pruebas nuevas (la de B10 provoca el fallo real con el rol reservado `pg_monitor`).
+  - **M4** `deploy.sh production` aborta con semilla demo, llaves generadas o llaves vacías; el job de producción arma un `.env` ficticio con llaves creadas en el job.
+  - **M5** acciones por SHA (resueltos con `git ls-remote`), `persist-credentials: false`, job `publish-images` como único con `packages: write` (después de staging), Trivy, `composer audit`, `npm audit`. Al escanear localmente con Trivy salieron CVE HIGH/CRITICAL corregibles en la imagen web: se agregó `apk upgrade` en las dos imágenes (0 hallazgos después).
+  - **Bajos:** B1 (SELECT 1 + "permission denied"), B2 (`UserSeeder` con `firstOrCreate` + prueba), B3 (`umask 077`, llaves respaldadas aparte), B4 (trap con `dropdb`, COMPOSE detectado), B5 (redes `edge`/`data`), B6 (CORS vacío en producción), B7 (`LLM_API_KEY` solo en api), B8 (`stop_grace_period: 155s`), B9/B11/B12 (DEPLOY.md). Supuestos S-111…S-118.
+- Qué decisión tomó y por qué:
+  - B2 con `firstOrCreate` en el seeder (y no "sembrar solo si `users` está vacía"): los demás seeders siguen completando datos que falten y la regla vive en un solo lugar, con prueba.
+  - La publicación en GHCR pasó a después de staging: solo se sube lo que pasó el smoke.
+  - Trivy se corrió localmente con el binario oficial dentro de un `alpine:3` efímero sobre `docker save` de las imágenes, para no dejar imágenes nuevas en el host.
+  - Un solo commit para `ci.yml` (A1, M1, M4, M5, B1 tocan el mismo archivo); el mensaje los separa.
+- Puntos que Daniel debe revisar/entender:
+  - Configurar en GitHub el environment `production` (Required reviewers), los secretos `SMOKE_EMAIL`/`SMOKE_PASSWORD` y la variable `PRODUCTION_REVIEWERS_CONFIGURED=true`; sin la variable, un push a `main` no despliega.
+  - Cada corrida del smoke en un stack demo consume 1 unidad de la prescripción demo (S-114).
+  - Cómo se actualiza una acción fijada por SHA (`git ls-remote … refs/tags/vX.Y.Z`).
+- Riesgos o cosas que podrían estar mal:
+  - GitHub Actions sigue sin ejecutarse: la compuerta con `vars`, los environments, Trivy en el runner, `publish-images` y los secretos solo se verán en GitHub. El job de producción y el `.env` ficticio se simularon en local.
+  - `apk upgrade` hace que dos construcciones en días distintos puedan diferir en paquetes del sistema.
+  - DEPLOY.md quedó en unas 760 palabras (algo más de una página) por los pasos de configuración que pidió la revisión.
+  - El `umask 077` no se puede observar en NTFS desde Git Bash (los permisos se emulan); en Linux aplica.

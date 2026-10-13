@@ -28,7 +28,7 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 | 4 Seguridad y privacidad | ✅ Hecha (mergeada con el PR #3) | Logs JSON redactados, correlation id, pacientes con enmascarado + bitácora, prescripciones, admin de usuarios con clave temporal, login sin enumeración; 717 tests (3160 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-68…S-79 |
 | 5 Frontend | ✅ Hecha (PR #3, mergeado) | Login + cambio de clave, navegación por rol, dispensación con vista previa FEFO e Idempotency-Key, bandeja de autorizaciones, prescripción del médico, traslados por `allowed_actions`, inventario/alertas/ajustes, kardex, usuarios; endpoints `GET /warehouses`, `/products`, `/dispensations` y `allowed_actions` en dispensaciones; 104 tests Vitest, 758 Pest (3320 aserciones); revisor-senior sin Críticos, Altos y Medios corregidos; supuestos S-80…S-88 |
 | 6 Asistente IA | ✅ Hecha (PR `feat/fase-6-asistente-ia`) | `LlmProvider` mock/ollama/anthropic por `LLM_PROVIDER`, 7 herramientas de solo lectura con Policies, filtros de entrada/salida, notas de traslados nunca enviadas al modelo, `POST /assistant/query`, `assistant:eval` 18/18 con mock, pantalla del asistente; 917 Pest (3875 aserciones), 121 Vitest; revisor-senior sin Críticos, Alto y Medios corregidos; supuestos S-89…S-98; OpenAPI 0.6.1 |
-| 7 DevOps completo | ✅ Hecha (rama `feat/fase-7-devops`, sin push) | Imágenes multi-stage sin root (PHP-FPM + Nginx con la SPA), compose tipo producción con `migrate` one-shot y `scheduler`, override de desarrollo, rol de BD sin `TRUNCATE`, `TRUSTED_PROXIES`, headers de seguridad, logs JSON de Nginx, respaldo/restauración probados, CI completo (actionlint limpio), `docs/DEPLOY.md`; 927 Pest (3922 aserciones), 121 Vitest, eval 18/18; supuestos S-99…S-110. Sin revisión del revisor-senior todavía |
+| 7 DevOps completo | ✅ Hecha (rama `feat/fase-7-devops`, sin push) | Imágenes multi-stage sin root (PHP-FPM + Nginx con la SPA), compose tipo producción con `migrate` one-shot y `scheduler`, redes `edge`/`data`, override de desarrollo, rol de BD sin `TRUNCATE` (gestionable por el DBA), `TRUSTED_PROXIES`, headers de seguridad, logs JSON de Nginx, respaldo/restauración probados, smoke con escrituras como `fartmar_app`, CI con acciones por SHA, Trivy, auditorías y compuerta de producción, `docs/DEPLOY.md`; 931 Pest (3935 aserciones), 121 Vitest, eval 18/18; supuestos S-99…S-118. Revisor-senior: Altos y Medios corregidos, Bajos B1–B12 corregidos |
 | 8 Documentación y cierre | ⏭️ **Siguiente** | Ver "Lo que las fases siguientes deben saber de la Fase 7" |
 
 ## Entorno (importante para cualquier agente)
@@ -55,7 +55,7 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
 
 ## Lo que las fases siguientes deben saber de la Fase 7
 
-- Operación en `docs/DEPLOY.md` (≤ 1 página) y decisiones en S-99…S-110. Archivos: `backend/Dockerfile`,
+- Operación en `docs/DEPLOY.md` y decisiones en S-99…S-118 (S-111…S-118 = revisión). Archivos: `backend/Dockerfile`,
   `frontend/Dockerfile`, `docker/php/*`, `docker/nginx/*`, `docker-compose.yml`, `docker-compose.dev.yml`, `scripts/*`.
 - **Para el README (Fase 8):** comando único `cp .env.example .env && docker compose up -d --build --wait` →
   http://localhost:8080 con usuarios demo (`password`); `make dev` para desarrollo; tabla de servicios; nota de que en
@@ -66,8 +66,13 @@ linters en verde (muestra salida), ai-log, commits pequeños, actualiza docs/PRO
   lo detecta.
 - Dev y demo usan volúmenes de BD distintos (`db_data_dev` / `db_data`); las llaves de dev viven en `backend/.env`, las
   de la demo en el volumen `app_keys`.
-- No se pudo verificar: ejecución real en GitHub Actions (bloqueo de facturación), push a GHCR, `deploy.sh` con
-  `DRY_RUN=0`, la CSP en un navegador real. La fase no pasó todavía por el revisor-senior.
+- **Pendiente de Daniel en GitHub (repo público):** crear el environment `production` con *Required reviewers*,
+  los secretos `SMOKE_EMAIL`/`SMOKE_PASSWORD` y la variable `PRODUCTION_REVIEWERS_CONFIGURED=true` (pasos en
+  DEPLOY.md). Sin la variable, un push a `main` no despliega; solo `workflow_dispatch` con `confirm_production=DESPLEGAR`.
+- El smoke test (`SMOKE_DEMO_CHECKS=true`) dispensa 1 unidad de la prescripción demo en cada corrida (S-114).
+- `UserSeeder` usa `firstOrCreate`: re-sembrar ya no repone la clave ni reactiva usuarios demo (S-111).
+- No se pudo verificar: ejecución real en GitHub Actions (bloqueo de facturación), la compuerta con `vars`, Trivy en
+  el runner, push a GHCR, `deploy.sh` con `DRY_RUN=0`, la CSP en un navegador real.
 
 ## Lo que las fases siguientes deben saber de la Fase 6
 
